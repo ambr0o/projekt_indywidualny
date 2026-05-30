@@ -1,6 +1,6 @@
 # travel_agent
 
-Wyszukiwanie tanich lotów na AZair, zapis ofert w SQLite i porównywanie cen w czasie.
+Wyszukiwanie tanich lotów, zapis ofert w SQLite i porównywanie cen w czasie.
 
 `test_url.py` i `main.py` są **osobne**: najpierw generujesz link, potem scrapujesz.
 

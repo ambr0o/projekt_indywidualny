@@ -26,6 +26,46 @@ DISPLAY_DATE_PATTERN = (
 AIRLINE_TRACKBOOK_PATTERN = r"trackBook\s*\(\s*'([A-Z0-9]{2,3})'"
 CODE_SPAN_PATTERN = r'<span class="code">([A-Z]{3})'
 
+# Mapowanie kod IATA -> nazwa linii (rozszerzaj wedle potrzeb)
+IATA_TO_AIRLINE_NAME = {
+    "FR": "Ryanair",
+    "W6": "Wizz Air",
+    "W9": "Wizz Air Malta",
+    "LO": "LOT",
+    "LH": "Lufthansa",
+    "KL": "KLM",
+    "AF": "Air France",
+    "BA": "British Airways",
+    "U2": "easyJet",
+    "EW": "Eurowings",
+    "VY": "Vueling",
+    "AZ": "ITA Airways",
+    "OS": "Austrian",
+    "LX": "Swiss",
+    "SK": "SAS",
+    "TP": "TAP",
+    "TK": "Turkish Airlines",
+    "EI": "Aer Lingus",
+    "FI": "Icelandair",
+    "DY": "Norwegian",
+    "BT": "airBaltic",
+    "IB": "Iberia",
+    "AY": "Finnair",
+    "RO": "TAROM",
+    "OK": "Czech Airlines",
+}
+
+# Nowa struktura AZair (2025+): linia w klasie span, numer lotu w linku flightradar24
+AIRLINE_SPAN_PATTERN = (
+    r'<span class="airline\s+iata([A-Z0-9]{2,3})"[^>]*>([^<]+)</span>'
+)
+FLIGHTRADAR_PATTERN = r"flightradar24\.com/data/flights/([a-z]{2}\d+)"
+FLIGHT_LINK_TEXT_PATTERN = r">\s*([A-Z]{2}\d{2,5})\s*<"
+AIRLINE_TRACKBOOK2_PATTERN = r"trackBook2?\s*\(\s*'([A-Z0-9]{2,3})'"
+TOTAL_PRICE_PATTERN = (
+    r'<span class="totalPrice">.*?<span class="tp">([^<]+)</span>'
+)
+
 
 @dataclass
 class ScrapeResult:
@@ -188,19 +228,57 @@ def parse_flight_url(url):
     return result
 
 
+def extract_airlines(html):
+    """Zwraca liste (kod_iata, nazwa) dla kazdego segmentu w kolejnosci wystapienia."""
+    if not html:
+        return []
+    pairs = []
+    for code, name in re.findall(AIRLINE_SPAN_PATTERN, html):
+        pairs.append((code.upper(), name.strip()))
+
+    if not pairs:
+        # Fallback do starszej struktury HTML (trackBook / trackBook2)
+        for code in re.findall(AIRLINE_TRACKBOOK2_PATTERN, html):
+            code_u = code.upper()
+            name = IATA_TO_AIRLINE_NAME.get(code_u, code_u)
+            pairs.append((code_u, name))
+    return pairs
+
+
+def extract_flight_numbers(html):
+    """Numery lotow w kolejnosci segmentow (z linkow flightradar24 lub linkowanego tekstu)."""
+    if not html:
+        return []
+    numbers = []
+    for fr in re.findall(FLIGHTRADAR_PATTERN, html, re.IGNORECASE):
+        numbers.append(fr.upper())
+    if not numbers:
+        for fl in re.findall(FLIGHT_LINK_TEXT_PATTERN, html):
+            numbers.append(fl.upper())
+    return numbers
+
+
+def extract_total_price(html):
+    if not html:
+        return None
+    match = re.search(TOTAL_PRICE_PATTERN, html, re.DOTALL)
+    if match:
+        return match.group(1).strip().replace("&nbsp;", " ")
+    return None
+
+
 def extract_offer(text, html=""):
     if text == "" or text == None:
         return None
 
-    price_text = pick_total_price(text)
+    price_text = extract_total_price(html) or pick_total_price(text)
     if not price_text:
         return None
 
     route_match = re.search(ROUTE_PATTERN, text)
     if not route_match:
         route_match = re.search(ROUTE_PATTERN_LOOSE, text, re.IGNORECASE)
-        
-    flight_match = re.search(FLIGHT_NO_PATTERN, text, re.IGNORECASE)
+
     time_matches = re.findall(TIME_PATTERN, text)
 
     airport_codes = []
@@ -215,11 +293,11 @@ def extract_offer(text, html=""):
     origin = "UNK"
     if route_match:
         origin = route_match.group(1).upper()
-        
+
     destination = "UNK"
     if route_match:
         destination = route_match.group(2).upper()
-        
+
     if (origin == "UNK" or destination == "UNK") and len(airport_codes) >= 2:
         origin = airport_codes[0]
         destination = airport_codes[1]
@@ -227,19 +305,28 @@ def extract_offer(text, html=""):
     departure_time = ""
     if len(time_matches) >= 1:
         departure_time = time_matches[0]
-        
+
     arrival_time = ""
     if len(time_matches) >= 2:
         arrival_time = time_matches[1]
-        
-    flight_number = "UNKNOWN"
-    if flight_match:
-        flight_number = flight_match.group(1).upper()
 
-    airline = "UNKNOWN"
-    airline_match = re.search(AIRLINE_TRACKBOOK_PATTERN, html or text)
-    if airline_match:
-        airline = airline_match.group(1).upper()
+    # Linia lotnicza i numer lotu - osobno dla outbound i return
+    airlines = extract_airlines(html or "")
+    flight_numbers = extract_flight_numbers(html or "")
+
+    if not airlines:
+        # Ostateczny fallback: regex na samym tekscie
+        flight_match = re.search(FLIGHT_NO_PATTERN, text, re.IGNORECASE)
+        if flight_match:
+            flight_numbers = [flight_match.group(1).upper()]
+
+    outbound_airline_code = airlines[0][0] if len(airlines) >= 1 else "UNKNOWN"
+    outbound_airline_name = airlines[0][1] if len(airlines) >= 1 else "UNKNOWN"
+    return_airline_code = airlines[1][0] if len(airlines) >= 2 else outbound_airline_code
+    return_airline_name = airlines[1][1] if len(airlines) >= 2 else outbound_airline_name
+
+    outbound_flight_no = flight_numbers[0] if len(flight_numbers) >= 1 else "UNKNOWN"
+    return_flight_no = flight_numbers[1] if len(flight_numbers) >= 2 else "UNKNOWN"
 
     leg_dates = parse_display_dates(text)
     departure_date = leg_dates[0] if len(leg_dates) >= 1 else ""
@@ -253,8 +340,14 @@ def extract_offer(text, html=""):
         "departure_time": departure_time,
         "arrival_time": arrival_time,
         "price_text": price_text,
-        "airline": airline,
-        "flight_number": flight_number,
+        # Backward-compat: pierwsza linia/numer trafiaja do "airline"/"flight_number"
+        "airline": outbound_airline_name,
+        "airline_code": outbound_airline_code,
+        "flight_number": outbound_flight_no,
+        # Nowe pola: powrot
+        "return_airline": return_airline_name,
+        "return_airline_code": return_airline_code,
+        "return_flight_number": return_flight_no,
     }
     return offer_dict
 

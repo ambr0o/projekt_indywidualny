@@ -29,7 +29,11 @@ def normalize_offer(raw_offer):
         "price": price_val,
         "currency": currency_val,
         "airline": raw_offer["airline"],
+        "airline_code": raw_offer.get("airline_code"),
         "flight_number": raw_offer["flight_number"],
+        "return_airline": raw_offer.get("return_airline"),
+        "return_airline_code": raw_offer.get("return_airline_code"),
+        "return_flight_number": raw_offer.get("return_flight_number"),
     }
 
 
@@ -79,6 +83,10 @@ def run_search(flight_url, max_results=20, db_path=DEFAULT_DB_PATH):
                 currency=offer["currency"],
                 airline=offer["airline"],
                 flight_number=offer["flight_number"],
+                airline_code=offer["airline_code"],
+                return_airline=offer["return_airline"],
+                return_airline_code=offer["return_airline_code"],
+                return_flight_number=offer["return_flight_number"],
             )
 
         finish_search_run(conn, run_id=run_id, status="done")

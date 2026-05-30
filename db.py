@@ -41,6 +41,17 @@ def create_flight_offers_table(conn):
         )
         """
     )
+    # Lekka migracja: dodaj nowe kolumny gdy ich brak (idempotentne)
+    existing = {row[1] for row in cur.execute("PRAGMA table_info(flight_offers)").fetchall()}
+    new_columns = {
+        "airline_code": "TEXT",
+        "return_airline": "TEXT",
+        "return_airline_code": "TEXT",
+        "return_flight_number": "TEXT",
+    }
+    for col, col_type in new_columns.items():
+        if col not in existing:
+            cur.execute(f"ALTER TABLE flight_offers ADD COLUMN {col} {col_type}")
     conn.commit()
 
 
@@ -90,15 +101,21 @@ def insert_flight_offer(
     currency,
     airline,
     flight_number,
+    airline_code=None,
+    return_airline=None,
+    return_airline_code=None,
+    return_flight_number=None,
 ):
     cur = conn.cursor()
     cur.execute(
         """
         INSERT INTO flight_offers(
             search_run_id, origin, destination, departure_date, return_date,
-            price, currency, airline, flight_number, created_at
+            price, currency, airline, flight_number,
+            airline_code, return_airline, return_airline_code, return_flight_number,
+            created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             run_id,
@@ -110,6 +127,10 @@ def insert_flight_offer(
             currency,
             airline,
             flight_number,
+            airline_code,
+            return_airline,
+            return_airline_code,
+            return_flight_number,
         ),
     )
     conn.commit()

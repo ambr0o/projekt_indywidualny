@@ -22,3 +22,9 @@ env/
 # Sekrety / konfiguracja lokalna
 .env
 *.local
+
+# Duzy raw HTML (zachowujemy tylko wycinki div.result do testow)
+tests/fixtures/azair_full.html
+
+tests/
+tools/

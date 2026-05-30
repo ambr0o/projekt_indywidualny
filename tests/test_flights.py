@@ -1,4 +1,5 @@
 import unittest
+import re
 from pathlib import Path
 
 from flights import (
@@ -39,7 +40,8 @@ class TestFlightsParsing(unittest.TestCase):
         self.assertEqual(offer["destination"], "MXP")
         self.assertEqual(offer["departure_date"], "2026-06-20")
         self.assertEqual(offer["return_date"], "2026-06-24")
-        self.assertEqual(offer["airline"], "FR")
+        self.assertEqual(offer["airline_code"], "FR")
+        self.assertEqual(offer["airline"], "Ryanair")
         self.assertAlmostEqual(price_amount(offer["price_text"]), 31.26)
 
     def test_parse_price_text_eur(self):
@@ -56,6 +58,67 @@ class TestFlightsParsing(unittest.TestCase):
         amount, currency = parse_price_text("899 CZK")
         self.assertAlmostEqual(amount, 899.0)
         self.assertEqual(currency, "CZK")
+
+
+class TestRealAzairFixtures(unittest.TestCase):
+    """Sprawdza ze parser radzi sobie z prawdziwymi probkami HTML pobranymi z AZair."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture_dir = Path(__file__).parent / "fixtures"
+        cls.samples = sorted(cls.fixture_dir.glob("azair_result_*.html"))
+
+    def test_samples_exist(self):
+        self.assertGreater(
+            len(self.samples), 0,
+            "Brak plikow azair_result_*.html. Wygeneruj je: python tools/capture_sample.py 'URL'",
+        )
+
+    def test_every_sample_has_airline(self):
+        from flights import extract_offer
+
+        for path in self.samples:
+            html = path.read_text(encoding="utf-8")
+            text = re.sub(r"<[^>]+>", " ", html)
+            text = re.sub(r"\s+", " ", text).strip()
+            offer = extract_offer(text, html=html)
+            with self.subTest(file=path.name):
+                self.assertIsNotNone(offer, f"{path.name}: nie udalo sie wyciagnac oferty")
+                self.assertNotEqual(
+                    offer["airline"], "UNKNOWN",
+                    f"{path.name}: airline = UNKNOWN",
+                )
+                self.assertNotEqual(
+                    offer["airline_code"], "UNKNOWN",
+                    f"{path.name}: airline_code = UNKNOWN",
+                )
+
+    def test_every_sample_has_flight_number(self):
+        from flights import extract_offer
+
+        for path in self.samples:
+            html = path.read_text(encoding="utf-8")
+            text = re.sub(r"<[^>]+>", " ", html)
+            text = re.sub(r"\s+", " ", text).strip()
+            offer = extract_offer(text, html=html)
+            with self.subTest(file=path.name):
+                self.assertNotEqual(
+                    offer["flight_number"], "UNKNOWN",
+                    f"{path.name}: flight_number = UNKNOWN",
+                )
+
+    def test_every_sample_has_route_and_price(self):
+        from flights import extract_offer
+
+        for path in self.samples:
+            html = path.read_text(encoding="utf-8")
+            text = re.sub(r"<[^>]+>", " ", html)
+            text = re.sub(r"\s+", " ", text).strip()
+            offer = extract_offer(text, html=html)
+            with self.subTest(file=path.name):
+                self.assertNotIn(offer["origin"], ("UNK", ""))
+                self.assertNotIn(offer["destination"], ("UNK", ""))
+                self.assertGreater(price_amount(offer["price_text"]), 0)
 
 
 if __name__ == "__main__":
