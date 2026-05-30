@@ -178,7 +178,33 @@ def fetch_search_runs(conn, limit=10):
 
 
 def get_best_offer(conn, search_run_id=None):
-    rows = fetch_flight_offers(conn, search_run_id=search_run_id, limit=1)
+    """Najtansza oferta - z konkretnego runu lub globalnie.
+
+    Zawsze sortuje po cenie rosnaco, niezaleznie od run_id.
+    """
+    cur = conn.cursor()
+    if search_run_id is not None:
+        rows = cur.execute(
+            """
+            SELECT id, search_run_id, origin, destination, departure_date, return_date,
+                   price, currency, airline, flight_number, created_at
+            FROM flight_offers
+            WHERE search_run_id = ?
+            ORDER BY price ASC, id ASC
+            LIMIT 1
+            """,
+            (search_run_id,),
+        ).fetchall()
+    else:
+        rows = cur.execute(
+            """
+            SELECT id, search_run_id, origin, destination, departure_date, return_date,
+                   price, currency, airline, flight_number, created_at
+            FROM flight_offers
+            ORDER BY price ASC, id ASC
+            LIMIT 1
+            """
+        ).fetchall()
     if len(rows) == 0:
         return None
     return rows[0]
