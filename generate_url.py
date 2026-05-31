@@ -33,6 +33,7 @@ def build_url_params(
     dst_codes=None,
     src_slots=None,
     dst_slots=None,
+    src_mc="",
     dst_mc="",
     currency="EUR",
     is_oneway="return",
@@ -41,18 +42,22 @@ def build_url_params(
     adults="1",
     max_chng="1",
 ):
+    # AZair akceptuje tylko format DD.M.YYYY w polach depdate/arrdate (nie ISO).
+    dep_date = _to_azair_date(dep_date)
+    arr_date = _to_azair_date(arr_date)
+
     params = {
-        "searchtype": "flexi",
         "tp": "0",
-        "isOneway": is_oneway,
+        "searchtype": "flexi",
         "srcAirport": src_airport_label,
         "srcTypedText": src_typed_text,
         "srcFreeTypedText": "",
-        "srcMC": "",
+        "srcMC": src_mc,
         "srcFreeAirport": "",
         "dstAirport": dst_airport_label,
         "dstTypedText": dst_typed_text,
         "dstFreeTypedText": "",
+        "dstMC": dst_mc,
         "dstFreeAirport": "",
         "adults": adults,
         "children": "0",
@@ -93,23 +98,33 @@ def build_url_params(
         "arr5": "true",
         "arr6": "true",
         "maxChng": max_chng,
-        "indexSubmit": "Search",
+        "isOneway": is_oneway,
+        "resultSubmit": "Search",
     }
-
-    dep_month = month_from_date(dep_date)
-    if dep_month:
-        params["depmonth"] = dep_month
-    arr_month = month_from_date(arr_date)
-    if arr_month:
-        params["arrmonth"] = arr_month
-
-    if dst_mc:
-        params["dstMC"] = dst_mc
 
     add_airport_slots(params, "src", src_codes, src_slots)
     add_airport_slots(params, "dst", dst_codes, dst_slots)
 
     return params
+
+
+def _to_azair_date(s):
+    """Konwertuje '2026-07-01' lub '1.7.2026' do formatu AZair: '1.7.2026' (D.M.YYYY).
+
+    AZair odrzuca format ISO (YYYY-MM-DD) na polach depdate/arrdate.
+    """
+    s = s.strip()
+    if "-" in s:
+        parts = s.split("-")
+        if len(parts) == 3:
+            y, m, d = parts
+            return f"{int(d)}.{int(m)}.{int(y)}"
+    if "." in s:
+        parts = s.split(".")
+        if len(parts) == 3:
+            d, m, y = parts
+            return f"{int(d)}.{int(m)}.{int(y)}"
+    return s
 
 
 def add_airport_slots(params, prefix, codes, slots=None):
@@ -163,8 +178,8 @@ def parse_args():
     )
     parser.add_argument(
         "--dst-label",
-        required=True,
-        help='Etykieta lotniska przylotu, np. "Milan [MXP] (+LIN,BGY)"',
+        default="",
+        help='Etykieta lotniska przylotu, np. "Milan [MXP] (+LIN,BGY)". Niepotrzebne gdy --anywhere.',
     )
     parser.add_argument(
         "--dep",
@@ -209,6 +224,16 @@ def parse_args():
         help="Miasto docelowe AZair, np. MIL_ALL",
     )
     parser.add_argument(
+        "--src-mc",
+        default="",
+        help="Miasto wylotowe AZair, np. WAR_ALL",
+    )
+    parser.add_argument(
+        "--anywhere",
+        action="store_true",
+        help="Tryb Anywhere: dowolne lotnisko docelowe (ignoruje --dst-* gdy podane)",
+    )
+    parser.add_argument(
         "--currency",
         default="EUR",
         choices=["EUR", "PLN", "CZK", "GBP", "USD"],
@@ -228,21 +253,39 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if not args.anywhere and not args.dst_label:
+        raise SystemExit("Bez --anywhere musisz podac --dst-label.")
+
     src_slots = parse_slots(args.src_slots)
     if args.warsaw_src:
         src_slots = WARSAW_SRC_SLOTS
+
+    if args.anywhere:
+        dst_label = "Anywhere [XXX]"
+        dst_typed_text = "any"
+        dst_codes = None
+        dst_slots = None
+        dst_mc = ""
+    else:
+        dst_label = args.dst_label
+        dst_typed_text = args.dst_text
+        dst_codes = parse_codes(args.dst_codes)
+        dst_slots = parse_slots(args.dst_slots)
+        dst_mc = args.dst_mc
+
     url = build_search_url(
         args.src_label,
-        args.dst_label,
+        dst_label,
         args.dep,
         args.arr,
         src_typed_text=args.src_text,
-        dst_typed_text=args.dst_text,
+        dst_typed_text=dst_typed_text,
         src_codes=parse_codes(args.src_codes),
-        dst_codes=parse_codes(args.dst_codes),
+        dst_codes=dst_codes,
         src_slots=src_slots,
-        dst_slots=parse_slots(args.dst_slots),
-        dst_mc=args.dst_mc,
+        dst_slots=dst_slots,
+        src_mc=args.src_mc,
+        dst_mc=dst_mc,
         currency=args.currency,
         is_oneway=args.oneway,
         min_days_stay=args.min_days,

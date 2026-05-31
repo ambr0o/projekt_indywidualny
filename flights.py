@@ -55,11 +55,11 @@ IATA_TO_AIRLINE_NAME = {
     "OK": "Czech Airlines",
 }
 
-# Nowa struktura AZair (2025+): linia w klasie span, numer lotu w linku flightradar24
+
 AIRLINE_SPAN_PATTERN = (
     r'<span class="airline\s+iata([A-Z0-9]{2,3})"[^>]*>([^<]+)</span>'
 )
-FLIGHTRADAR_PATTERN = r"flightradar24\.com/data/flights/([a-z]{2}\d+)"
+FLIGHTRADAR_PATTERN = r'title="flightradar24"[^>]*>([A-Z][A-Z0-9]\d+)</a>'
 FLIGHT_LINK_TEXT_PATTERN = r">\s*([A-Z]{2}\d{2,5})\s*<"
 AIRLINE_TRACKBOOK2_PATTERN = r"trackBook2?\s*\(\s*'([A-Z0-9]{2,3})'"
 TOTAL_PRICE_PATTERN = (
@@ -156,6 +156,8 @@ def parse_flight_url(url):
     url_parsed = urllib.parse.urlparse(url.strip())
     qs = urllib.parse.parse_qs(url_parsed.query)
 
+    is_oneway = (get_first(qs, "isOneway") or "").lower() == "oneway"
+
     # 
     origin = None
     if get_first(qs, "srcap0"): origin = get_first(qs, "srcap0")
@@ -214,9 +216,10 @@ def parse_flight_url(url):
     departure_date = ""
     if dep_raw:
         departure_date = parse_date(dep_raw)
-        
+
+    # W one-way `arrdate` to granica okna wyszukiwania, NIE data powrotu.
     return_date = None
-    if arr_raw:
+    if not is_oneway and arr_raw:
         return_date = parse_date(arr_raw)
 
     result = {
@@ -224,12 +227,13 @@ def parse_flight_url(url):
         "destination": destination or "",
         "departure_date": departure_date,
         "return_date": return_date,
+        "is_oneway": is_oneway,
     }
     return result
 
 
 def extract_airlines(html):
-    """Zwraca liste (kod_iata, nazwa) dla kazdego segmentu w kolejnosci wystapienia."""
+    "Zwraca liste (kod_iata, nazwa) dla kazdego segmentu w kolejnosci wystapienia."
     if not html:
         return []
     pairs = []
@@ -237,7 +241,6 @@ def extract_airlines(html):
         pairs.append((code.upper(), name.strip()))
 
     if not pairs:
-        # Fallback do starszej struktury HTML (trackBook / trackBook2)
         for code in re.findall(AIRLINE_TRACKBOOK2_PATTERN, html):
             code_u = code.upper()
             name = IATA_TO_AIRLINE_NAME.get(code_u, code_u)
@@ -246,7 +249,7 @@ def extract_airlines(html):
 
 
 def extract_flight_numbers(html):
-    """Numery lotow w kolejnosci segmentow (z linkow flightradar24 lub linkowanego tekstu)."""
+    "Numery lotow w kolejnosci segmentow (z linkow flightradar24 lub linkowanego tekstu)."
     if not html:
         return []
     numbers = []
@@ -376,9 +379,14 @@ def merge_offer(offer, ctx):
         if "T" not in offer["departure_date"]:
             offer["departure_date"] = offer["departure_date"] + "T" + dep_time
 
-    if offer["return_date"] is None and "return_date" in ctx:
-        if ctx["return_date"] is not None:
-            offer["return_date"] = ctx["return_date"]
+    # One-way: brak daty powrotu, nawet jesli ctx ma cos tam (to wtedy granica okna szukania).
+    is_oneway = ctx.get("is_oneway", False)
+    if is_oneway:
+        offer["return_date"] = None
+    else:
+        if offer["return_date"] is None and "return_date" in ctx:
+            if ctx["return_date"] is not None:
+                offer["return_date"] = ctx["return_date"]
 
     # Klasyczne usuwanie ze slownika z instrukcja del (jak w C++)
     if "departure_time" in offer:
@@ -422,7 +430,7 @@ def scrape_flight_from_results_url_full(results_url, max_results=20):
                 return ScrapeResult(
                     [],
                     error="no_results",
-                    message="AZair: brak wynikow dla podanych parametrow",
+                    message="brak wynikow dla podanych parametrow",
                 )
 
             offers = []
