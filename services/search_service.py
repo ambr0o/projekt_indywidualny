@@ -38,6 +38,13 @@ class SearchResult:
 def _normalize_offer(raw_offer: dict) -> dict:
     """Konwertuje surowa oferte ze scrapera na format gotowy do zapisu w DB."""
     price_val, currency_val = parse_price_text(raw_offer["price_text"])
+
+    # Ceny czastkowe nog - moga byc None (np. gdy AZair nie podal subPrice)
+    out_text = raw_offer.get("outbound_price_text")
+    ret_text = raw_offer.get("return_price_text")
+    outbound_price = parse_price_text(out_text)[0] if out_text else None
+    return_price = parse_price_text(ret_text)[0] if ret_text else None
+
     return {
         "origin": raw_offer["origin"],
         "destination": raw_offer["destination"],
@@ -51,6 +58,8 @@ def _normalize_offer(raw_offer: dict) -> dict:
         "return_airline": raw_offer.get("return_airline"),
         "return_airline_code": raw_offer.get("return_airline_code"),
         "return_flight_number": raw_offer.get("return_flight_number"),
+        "outbound_price": outbound_price,
+        "return_price": return_price,
     }
 
 
@@ -112,6 +121,8 @@ def search_and_save(
                 return_airline=offer["return_airline"],
                 return_airline_code=offer["return_airline_code"],
                 return_flight_number=offer["return_flight_number"],
+                outbound_price=offer["outbound_price"],
+                return_price=offer["return_price"],
             )
 
         finish_search_run(conn, run_id=run_id, status="done")

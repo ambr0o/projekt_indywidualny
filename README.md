@@ -2,7 +2,7 @@
 
 Wyszukiwanie tanich lotów, zapis ofert w SQLite i porównywanie cen w czasie.
 
-`test_url.py` i `main.py` są **osobne**: najpierw generujesz link, potem scrapujesz.
+`test_url.py` i `main.py` są **osobne**: najpierw generujesz link, potem wyszukujesz.
 
 ## Wymagania
 
@@ -30,7 +30,7 @@ python test_url.py \
 
 `--warsaw-src` ustawia sloty `srcap` jak w przeglądarce (`0,6,7,8`). Własne: `--src-slots 0,6,7,8`.
 
-## 2. Scrapuj i zapisz (`main.py`)
+## 2. Wyszukaj i zapisz (`main.py`)
 
 ```bash
 python main.py 'https://www.azair.eu/azfin.php?...'
@@ -61,7 +61,7 @@ python -m unittest tests/test_flights.py
 | Plik | Rola |
 |------|------|
 | `test_url.py` | Generator linków AZair (CLI) |
-| `main.py` | Scraping, baza, list/best/compare/alert |
+| `main.py` | wyszuaknie, baza, list/best/compare/alert |
 | `flights.py` | Parsowanie i Playwright |
 | `db.py` | SQLite |
 | `database.db` | Dane (tworzy się przy pierwszym uruchomieniu) |

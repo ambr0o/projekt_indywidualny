@@ -39,9 +39,18 @@ from bot.formatters import (
     format_best,
     format_comparison,
     format_offers_list,
+    format_ranking,
     format_runs_list,
+    format_stats,
 )
 from services.alert_service import check_threshold
+from services.analytics_service import (
+    cheapest_weekday,
+    destination_ranking,
+    price_percentile,
+    route_price_stats,
+)
+from services.find_service import build_find_request
 from services.query_service import compare_runs, get_best, list_offers, list_runs
 from services.search_service import search_and_save
 
@@ -102,7 +111,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/list [limit] - ostatnie oferty\n"
         "/runs [limit] - historia wyszukiwan\n"
         "/compare [origin] [dest] - porownaj 2 ostatnie runy\n"
+        "/stats <origin> <dest> [cena] - statystyki cen trasy\n"
+        "/rank <origin> - najtansze kierunki z lotniska\n"
         "/alert <prog> [waluta] - sprawdz prog cenowy\n"
+        "/find <skad> <dokad> <od> <do> [oneway] - wyszukaj loty\n"
         "/search <url> - scrapuj URL AZair (30-60s)\n"
     )
     await update.message.reply_text(text)
@@ -149,6 +161,39 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 @authorized_only
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 2:
+        await update.message.reply_text("Uzycie: /stats <origin> <destination> [cena]\nNp: /stats WMI MXP 30")
+        return
+    origin = context.args[0].upper()
+    destination = context.args[1].upper()
+
+    price = None
+    if len(context.args) >= 3:
+        try:
+            price = float(context.args[2].replace(",", "."))
+        except ValueError:
+            await update.message.reply_text("Cena musi byc liczba.")
+            return
+
+    db = _db_path()
+    stats = route_price_stats(origin, destination, db_path=db)
+    weekdays = cheapest_weekday(origin, destination, db_path=db)
+    percentile = price_percentile(price, origin, destination, db_path=db) if price is not None else None
+    await update.message.reply_text(format_stats(stats, weekdays, percentile))
+
+
+@authorized_only
+async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Uzycie: /rank <origin>\nNp: /rank KRK")
+        return
+    origin = context.args[0].upper()
+    ranking = destination_ranking(origin, db_path=_db_path(), limit=15)
+    await update.message.reply_text(format_ranking(origin, ranking))
+
+
+@authorized_only
 async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Uzycie: /alert <prog> [waluta]\nNp: /alert 30 EUR")
@@ -161,6 +206,53 @@ async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     currency = context.args[1].upper() if len(context.args) >= 2 else "EUR"
     result = check_threshold(threshold=threshold, expected_currency=currency, db_path=_db_path())
     await update.message.reply_text(format_alert(result))
+
+
+@authorized_only
+async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if len(args) < 4:
+        await update.message.reply_text(
+            "Uzycie: /find <skad> <dokad> <data-od> <data-do> [oneway]\n\n"
+            "Przyklady:\n"
+            "/find WAW TIA 2026-08-02 2026-08-09\n"
+            "/find KRK FCO 2026-07-01 2026-07-31 oneway\n"
+            "/find GDN anywhere 2026-07-01 2026-08-31"
+        )
+        return
+
+    origin, destination, dep_date, arr_date = args[0], args[1], args[2], args[3]
+    oneway = len(args) >= 5 and args[4].lower() == "oneway"
+
+    req = build_find_request(origin, destination, dep_date, arr_date, oneway=oneway)
+    if req.error:
+        await update.message.reply_text(f"❌ {req.error}")
+        return
+
+    typ = "one-way" if req.is_oneway else "round-trip"
+    cel = "dowolny kierunek" if req.is_anywhere else req.destination
+    prefix = ""
+    if not req.is_anywhere and not req.known_destination:
+        prefix = (
+            f"⚠️ Nie znam lotniska {req.destination} - jesli to czesc wiekszego miasta "
+            f"(jak BGY=Milan), wyszukiwanie moze nie zadzialac.\n\n"
+        )
+    await update.message.reply_text(f"{prefix}🔎 Szukam: {req.origin} → {cel} ({typ})... (30-60s)")
+
+    result = await asyncio.to_thread(search_and_save, req.url, _db_path(), 20)
+    if not result.success:
+        await update.message.reply_text(
+            f"❌ Brak wynikow: {result.error_message}\n"
+            "Sprawdz czy kody lotnisk sa poprawne i czy w tym terminie sa loty."
+        )
+        return
+
+    offers = list_offers(db_path=_db_path(), run_id=result.run_id, limit=10)
+    msg = (
+        f"✅ Znalazlem {result.offers_count} ofert (run #{result.run_id})\n\n"
+        + format_offers_list(offers, max_items=5)
+    )
+    await update.message.reply_text(msg)
 
 
 @authorized_only
@@ -207,7 +299,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("runs", cmd_runs))
     app.add_handler(CommandHandler("compare", cmd_compare))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("rank", cmd_rank))
     app.add_handler(CommandHandler("alert", cmd_alert))
+    app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("search", cmd_search))
     return app
 

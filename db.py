@@ -48,6 +48,8 @@ def create_flight_offers_table(conn):
         "return_airline": "TEXT",
         "return_airline_code": "TEXT",
         "return_flight_number": "TEXT",
+        "outbound_price": "REAL",
+        "return_price": "REAL",
     }
     for col, col_type in new_columns.items():
         if col not in existing:
@@ -105,6 +107,8 @@ def insert_flight_offer(
     return_airline=None,
     return_airline_code=None,
     return_flight_number=None,
+    outbound_price=None,
+    return_price=None,
 ):
     cur = conn.cursor()
     cur.execute(
@@ -113,9 +117,10 @@ def insert_flight_offer(
             search_run_id, origin, destination, departure_date, return_date,
             price, currency, airline, flight_number,
             airline_code, return_airline, return_airline_code, return_flight_number,
+            outbound_price, return_price,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             run_id,
@@ -131,6 +136,8 @@ def insert_flight_offer(
             return_airline,
             return_airline_code,
             return_flight_number,
+            outbound_price,
+            return_price,
         ),
     )
     conn.commit()
@@ -174,6 +181,61 @@ def fetch_search_runs(conn, limit=10):
         LIMIT ?
         """,
         (limit,),
+    ).fetchall()
+
+
+# --- Gettery analityczne (surowe SQL, bez logiki statystycznej) ---
+
+def fetch_prices_for_route(conn, origin, destination):
+    """Zwraca [(price, departure_date), ...] dla danej trasy (para lotnisk).
+
+    Baza jest jednowalutowa (EUR), wiec bez filtra waluty.
+    """
+    cur = conn.cursor()
+    return cur.execute(
+        """
+        SELECT price, departure_date
+        FROM flight_offers
+        WHERE origin = ? AND destination = ?
+        ORDER BY price ASC
+        """,
+        (origin.upper(), destination.upper()),
+    ).fetchall()
+
+
+def fetch_destinations_from(conn, origin):
+    """Zwraca [(destination, min_price, avg_price, count), ...] dla danego lotniska wylotu."""
+    cur = conn.cursor()
+    return cur.execute(
+        """
+        SELECT destination, MIN(price), AVG(price), COUNT(*)
+        FROM flight_offers
+        WHERE origin = ?
+        GROUP BY destination
+        ORDER BY MIN(price) ASC
+        """,
+        (origin.upper(),),
+    ).fetchall()
+
+
+def fetch_prices_by_weekday(conn, origin, destination):
+    """Zwraca [(weekday, avg_price, min_price, count), ...] dla trasy.
+
+    weekday wg strftime('%w'): '0'=niedziela ... '6'=sobota.
+    departure_date bywa 'YYYY-MM-DD' lub 'YYYY-MM-DDTHH:MM' - tniemy do 10 znakow.
+    """
+    cur = conn.cursor()
+    return cur.execute(
+        """
+        SELECT strftime('%w', substr(departure_date, 1, 10)) AS wd,
+               AVG(price), MIN(price), COUNT(*)
+        FROM flight_offers
+        WHERE origin = ? AND destination = ?
+          AND substr(departure_date, 1, 10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+        GROUP BY wd
+        ORDER BY wd
+        """,
+        (origin.upper(), destination.upper()),
     ).fetchall()
 
 

@@ -11,6 +11,12 @@ from typing import Optional
 
 from db import DEFAULT_DB_PATH
 from services.alert_service import check_threshold
+from services.analytics_service import (
+    cheapest_weekday,
+    destination_ranking,
+    price_percentile,
+    route_price_stats,
+)
 from services.query_service import (
     ComparisonResult,
     OfferRow,
@@ -115,6 +121,54 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def cmd_stats(args) -> int:
+    origin = args.origin.upper()
+    destination = args.destination.upper()
+
+    stats = route_price_stats(origin, destination, db_path=args.db)
+    if stats is None:
+        print(f"Brak danych dla trasy {origin}->{destination}.")
+        return 0
+
+    print(f"Statystyki cen {origin}->{destination} ({stats.count} ofert, EUR):")
+    print(f"  min:     {stats.min_price:.2f}")
+    print(f"  mediana: {stats.median_price:.2f}")
+    print(f"  srednia: {stats.avg_price:.2f}")
+    print(f"  max:     {stats.max_price:.2f}")
+    print(f"  odchyl.: {stats.stdev_price:.2f}")
+
+    weekdays = cheapest_weekday(origin, destination, db_path=args.db)
+    if weekdays:
+        print("\nNajtanszy dzien wylotu:")
+        for w in weekdays[:3]:
+            print(f"  {w.weekday}: sr. {w.avg_price:.2f} (min {w.min_price:.2f}, {w.count} ofert)")
+
+    if args.price is not None:
+        pct = price_percentile(args.price, origin, destination, db_path=args.db)
+        if pct is not None:
+            print(
+                f"\nCena {args.price:.2f} EUR jest w {pct.percentile:.0f}. percentylu "
+                f"({pct.cheaper_than_pct:.0f}% obserwacji drozszych, n={pct.sample_size})"
+            )
+            if pct.percentile <= 25:
+                print("  -> OKAZJA (taniej niz wiekszosc historii)")
+            elif pct.percentile >= 75:
+                print("  -> DROGO (drozej niz wiekszosc historii)")
+    return 0
+
+
+def cmd_rank(args) -> int:
+    origin = args.origin.upper()
+    ranking = destination_ranking(origin, db_path=args.db, limit=args.limit)
+    if not ranking:
+        print(f"Brak danych dla wylotow z {origin}.")
+        return 0
+    print(f"Najtansze kierunki z {origin} (EUR):")
+    for r in ranking:
+        print(f"  {r.destination}: min {r.min_price:.2f}, sr. {r.avg_price:.2f} ({r.count} ofert)")
+    return 0
+
+
 def cmd_alert(args) -> int:
     result = check_threshold(
         threshold=args.threshold,
@@ -177,6 +231,16 @@ def build_parser() -> argparse.ArgumentParser:
     alert_p.add_argument("--currency", default="EUR")
     alert_p.add_argument("--run-id", type=int, default=None)
 
+    stats_p = sub.add_parser("stats", help="Statystyki cen dla trasy")
+    stats_p.add_argument("--origin", required=True)
+    stats_p.add_argument("--destination", required=True)
+    stats_p.add_argument("--price", type=float, default=None,
+                         help="Cena do oceny percentylem (opcjonalne)")
+
+    rank_p = sub.add_parser("rank", help="Ranking najtanszych kierunkow z lotniska")
+    rank_p.add_argument("--origin", required=True)
+    rank_p.add_argument("--limit", type=int, default=20)
+
     return parser
 
 
@@ -208,6 +272,8 @@ def main() -> None:
         "runs": cmd_runs,
         "compare": cmd_compare,
         "alert": cmd_alert,
+        "stats": cmd_stats,
+        "rank": cmd_rank,
     }
     sys.exit(handlers[args.command](args))
 

@@ -65,6 +65,7 @@ AIRLINE_TRACKBOOK2_PATTERN = r"trackBook2?\s*\(\s*'([A-Z0-9]{2,3})'"
 TOTAL_PRICE_PATTERN = (
     r'<span class="totalPrice">.*?<span class="tp">([^<]+)</span>'
 )
+SUBPRICE_PATTERN = r'<span class="subPrice">([^<]+)</span>'
 
 
 @dataclass
@@ -270,6 +271,17 @@ def extract_total_price(html):
     return None
 
 
+def extract_subprices(html):
+    """Zwraca liste cen czastkowych (subPrice) w kolejnosci nog.
+
+    Round-trip: [cena_tam, cena_powrot]. One-way: [cena_lotu].
+    U low-costow suma subPrice = totalPrice, wiec subPrice = cena one-way danej nogi.
+    """
+    if not html:
+        return []
+    return [m.strip().replace("&nbsp;", " ") for m in re.findall(SUBPRICE_PATTERN, html)]
+
+
 def extract_offer(text, html=""):
     if text == "" or text == None:
         return None
@@ -331,6 +343,11 @@ def extract_offer(text, html=""):
     outbound_flight_no = flight_numbers[0] if len(flight_numbers) >= 1 else "UNKNOWN"
     return_flight_no = flight_numbers[1] if len(flight_numbers) >= 2 else "UNKNOWN"
 
+    # Ceny czastkowe nog (subPrice). U low-costow subPrice = cena one-way danej nogi.
+    subprices = extract_subprices(html or "")
+    outbound_price_text = subprices[0] if len(subprices) >= 1 else None
+    return_price_text = subprices[1] if len(subprices) >= 2 else None
+
     leg_dates = parse_display_dates(text)
     departure_date = leg_dates[0] if len(leg_dates) >= 1 else ""
     return_date = leg_dates[1] if len(leg_dates) >= 2 else None
@@ -351,6 +368,9 @@ def extract_offer(text, html=""):
         "return_airline": return_airline_name,
         "return_airline_code": return_airline_code,
         "return_flight_number": return_flight_no,
+        # Ceny czastkowe nog
+        "outbound_price_text": outbound_price_text,
+        "return_price_text": return_price_text,
     }
     return offer_dict
 
@@ -383,6 +403,7 @@ def merge_offer(offer, ctx):
     is_oneway = ctx.get("is_oneway", False)
     if is_oneway:
         offer["return_date"] = None
+        offer["return_price_text"] = None
     else:
         if offer["return_date"] is None and "return_date" in ctx:
             if ctx["return_date"] is not None:

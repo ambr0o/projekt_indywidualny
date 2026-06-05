@@ -28,3 +28,9 @@ tests/fixtures/azair_full.html
 
 tests/
 tools/
+
+# Dokumenty robocze
+DESIGN.md
+
+# Backupy bazy
+*.db.bak

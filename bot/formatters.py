@@ -8,6 +8,12 @@ import json
 from typing import List, Optional
 
 from services.alert_service import AlertResult
+from services.analytics_service import (
+    DestinationRank,
+    PercentileResult,
+    PriceStats,
+    WeekdayStat,
+)
 from services.query_service import ComparisonResult, OfferRow, RunRow
 
 
@@ -95,3 +101,50 @@ def format_alert(result: AlertResult) -> str:
         f"OK: najtansza {offer.price:.2f} {offer.currency} > prog "
         f"{result.threshold:.2f} {result.expected_currency}"
     )
+
+
+def format_stats(
+    stats: Optional[PriceStats],
+    weekdays: List[WeekdayStat],
+    percentile: Optional[PercentileResult] = None,
+) -> str:
+    if stats is None:
+        return "Brak danych dla tej trasy."
+
+    lines = [
+        f"📊 {stats.origin} → {stats.destination}  ({stats.count} ofert, EUR)",
+        "",
+        f"min:     {stats.min_price:.2f}",
+        f"mediana: {stats.median_price:.2f}",
+        f"srednia: {stats.avg_price:.2f}",
+        f"max:     {stats.max_price:.2f}",
+        f"odchyl.: {stats.stdev_price:.2f}",
+    ]
+
+    if weekdays:
+        lines.append("")
+        lines.append("📅 Najtanszy dzien wylotu:")
+        for w in weekdays[:3]:
+            lines.append(f"   {w.weekday}: sr. {w.avg_price:.2f} ({w.count} ofert)")
+
+    if percentile is not None:
+        lines.append("")
+        lines.append(
+            f"💶 Cena {percentile.price:.2f} EUR = {percentile.percentile:.0f}. percentyl "
+            f"({percentile.cheaper_than_pct:.0f}% drozszych, n={percentile.sample_size})"
+        )
+        if percentile.percentile <= 25:
+            lines.append("   🟢 OKAZJA")
+        elif percentile.percentile >= 75:
+            lines.append("   🔴 DROGO")
+
+    return "\n".join(lines)
+
+
+def format_ranking(origin: str, ranking: List[DestinationRank]) -> str:
+    if not ranking:
+        return f"Brak danych dla wylotow z {origin}."
+    lines = [f"🏆 Najtansze kierunki z {origin} (EUR):", ""]
+    for r in ranking:
+        lines.append(f"{r.destination}: min {r.min_price:.2f}  (sr. {r.avg_price:.2f}, {r.count} ofert)")
+    return "\n".join(lines)
