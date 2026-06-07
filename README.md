@@ -1,80 +1,95 @@
 # travel_agent
 
-Wyszukiwanie tanich lotów, zapis ofert w SQLite i porównywanie cen w czasie.
+Agent do wyszukiwania tanich lotów, budowania własnej historii
+cen w SQLite, analizy cenowej i interakcji przez bota Telegram.
 
-`test_url.py` i `main.py` są **osobne**: najpierw generujesz link, potem wyszukujesz.
+Wyszukujesz loty prostą komendą, system zapisuje oferty, liczy statystyki,
+porównuje kierunki i dorzuca typową pogodę w destynacji.
 
-## Wymagania
+## Wymagania i instalacja
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install playwright
+pip install -r requirements.txt
 playwright install
 ```
 
-## 1. Wygeneruj link (`test_url.py`)
+## Konfiguracja
 
-```bash
-python test_url.py \
-  --src-label 'Warsaw [WAW] (+WMI,KTW,RZE,KRK)' \
-  --src-codes WMI,KTW,RZE,KRK \
-  --warsaw-src \
-  --dst-label 'Milan [MXP] (+LIN,BGY)' \
-  --dst-codes LIN,BGY \
-  --dst-mc MIL_ALL \
-  --dep 2026-05-24 \
-  --arr 2027-01-31 \
-  --currency EUR
+Skopiuj `.env.example` jako `.env` i uzupełnij:
+
+```
+TELEGRAM_BOT_TOKEN=<token od @BotFather>
+TELEGRAM_ALLOWED_CHAT_IDS=<twoj chat_id>   # puste = każdy ma dostęp
+TRAVEL_AGENT_DB=database.db
 ```
 
-`--warsaw-src` ustawia sloty `srcap` jak w przeglądarce (`0,6,7,8`). Własne: `--src-slots 0,6,7,8`.
-
-## 2. Wyszukaj i zapisz (`main.py`)
+## Użycie — CLI
 
 ```bash
-python main.py 'https://www.azair.eu/azfin.php?...'
-# lub
-python main.py search 'https://www.azair.eu/azfin.php?...'
-```
 
-## 3. Przegląd bazy
+# przeglądanie
+python main.py runs                       # historia wyszukiwań
+python main.py list --limit 10            # ostatnie oferty
+python main.py best                        # najtańsza oferta
 
-```bash
-python main.py runs              # historia wyszukiwań
-python main.py list              # ostatnie oferty
-python main.py list --run-id 3   # oferty z konkretnego runu
-python main.py best              # najtańsza oferta
-python main.py compare           # porównanie 2 ostatnich udanych runów
-python main.py compare --origin WMI --destination LIN
+# analityka
+python main.py stats --origin WAW --destination TIA --price 30
+python main.py rank --origin KRK           # najtańsze kierunki z lotniska
+python main.py leg --origin WAW --destination TIA   # cena pojedynczego przelotu
+python main.py compare --origin WAW --destination TIA
 python main.py alert --threshold 50 --currency EUR
 ```
 
-## Testy (bez Playwrighta)
+## Użycie — bot Telegram
 
 ```bash
-python -m unittest tests/test_flights.py
+python -m bot.telegram_bot
 ```
 
-## Pliki
+Komendy w czacie:
 
-| Plik | Rola |
-|------|------|
-| `test_url.py` | Generator linków AZair (CLI) |
-| `main.py` | wyszuaknie, baza, list/best/compare/alert |
-| `flights.py` | Parsowanie i Playwright |
-| `db.py` | SQLite |
-| `database.db` | Dane (tworzy się przy pierwszym uruchomieniu) |
+| Komenda | Opis |
+|---------|------|
+| `/find WAW TIA 2026-08-02 2026-08-09 [oneway]` | wyszukaj loty (z prostych parametrów, + pogoda celu) |
+| `/find GDN anywhere 2026-07-01 2026-08-31` | tryb Anywhere — dowolny kierunek |
+| `/best` | najtańsza oferta w bazie |
+| `/list [limit]` | ostatnie oferty |
+| `/runs [limit]` | historia wyszukiwań |
+| `/rank KRK` | najtańsze kierunki z lotniska |
+| `/stats WAW TIA [cena]` | statystyki trasy + ocena ceny (percentyl) |
+| `/leg WAW TIA` | cena pojedynczego przelotu w obie strony + asymetria |
+| `/compare WAW TIA` | porównanie dwóch ostatnich wyszukiwań |
+| `/weather TIA 8` | typowa pogoda klimatyczna dla lotniska w danym miesiącu |
+| `/alert <próg> [waluta]` | sprawdź próg cenowy |
 
-## Typowy workflow
+## Model danych
 
-```bash
-# terminal 1 – link
-python test_url.py --src-label '...' --dst-label '...' --dep ... --arr ...
+Dwie tabele połączone relacją 1:N:
 
-# terminal 2 – scrape (wklej URL z kroku 1)
-python main.py search 'URL'
+- **`search_runs`** — jedno wyszukiwanie (kiedy, jakie parametry, status)
+- **`flight_offers`** — oferty znalezione w danym wyszukiwaniu
 
-# później
-python main.py compare
-```
+Każda oferta = jedna **podróż**:
+- round-trip — ma `return_date` + ceny obu nóg (`outbound_price`, `return_price`)
+- one-way — `return_date = NULL`, puste pola powrotu
+
+Ceny cząstkowe nóg (`subPrice` z AZair) pozwalają na **analitykę kierunkową** —
+liczenie ceny pojedynczego przelotu, niezależnie czy pochodzi z one-waya czy
+z nogi round-tripa. Dzięki temu da się porównać loty w jednej jednostce
+i pokazać asymetrię kierunku (lot tam vs powrót).
+
+Baza jest jednowalutowa (EUR).
+
+## Pogoda
+
+Typowa pogoda klimatyczna z Open-Meteo. Loty są zwykle
+1-2 miesiące do przodu — poza zasięgiem prognozy (16 dni) — więc używamy danych
+historycznych z poprzedniego roku dla tego samego miesiąca ("typowa pogoda dla
+okresu"). Wyniki cache'owane w SQLite.
+
+
+## Status
+
+Działa: wyszukiwanie, przeglądanie, ranking kierunków, cena przelotu, pogoda.
