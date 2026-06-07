@@ -14,6 +14,7 @@ from typing import List, Optional
 from db import (
     DEFAULT_DB_PATH,
     fetch_destinations_from,
+    fetch_direction_leg_prices,
     fetch_prices_by_weekday,
     fetch_prices_for_route,
 )
@@ -71,6 +72,22 @@ class PercentileResult:
     percentile: float     # 0-100; nizszy = taniej niz wiekszosc
     cheaper_than_pct: float  # % obserwacji drozszych od podanej ceny
     sample_size: int
+
+
+@dataclass
+class DirectionStats:
+    """Statystyki ceny POJEDYNCZEGO przelotu (nogi) origin->destination.
+
+    W przeciwienstwie do PriceStats (cena calej podrozy), tu liczymy cene
+    jednego lotu - zbierana z one-wayow i nog round-tripow w tym kierunku.
+    """
+    origin: str
+    destination: str
+    count: int
+    min_price: float
+    max_price: float
+    avg_price: float
+    median_price: float
 
 
 def route_price_stats(
@@ -176,4 +193,34 @@ def price_percentile(
         percentile=round(100.0 * at_or_below / n, 1),
         cheaper_than_pct=round(100.0 * above / n, 1),
         sample_size=n,
+    )
+
+
+def direction_stats(
+    origin: str,
+    destination: str,
+    db_path: str = DEFAULT_DB_PATH,
+) -> Optional[DirectionStats]:
+    """Statystyki ceny pojedynczego przelotu origin->destination (na poziomie nog).
+
+    Laczy ceny z one-wayow + nog round-tripow w tym kierunku. Wszystko w jednej
+    jednostce 'cena jednego lotu', wiec porownywalne. Zwraca None gdy brak danych.
+    """
+    conn = open_db(db_path)
+    try:
+        prices = fetch_direction_leg_prices(conn, origin, destination)
+    finally:
+        conn.close()
+
+    if not prices:
+        return None
+
+    return DirectionStats(
+        origin=origin.upper(),
+        destination=destination.upper(),
+        count=len(prices),
+        min_price=min(prices),
+        max_price=max(prices),
+        avg_price=statistics.mean(prices),
+        median_price=statistics.median(prices),
     )

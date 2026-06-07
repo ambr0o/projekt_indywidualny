@@ -38,6 +38,7 @@ from bot.formatters import (
     format_alert,
     format_best,
     format_comparison,
+    format_direction,
     format_offers_list,
     format_ranking,
     format_runs_list,
@@ -47,12 +48,14 @@ from services.alert_service import check_threshold
 from services.analytics_service import (
     cheapest_weekday,
     destination_ranking,
+    direction_stats,
     price_percentile,
     route_price_stats,
 )
 from services.find_service import build_find_request
 from services.query_service import compare_runs, get_best, list_offers, list_runs
 from services.search_service import search_and_save
+from services.weather_service import weather_for
 
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -113,6 +116,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/compare [origin] [dest] - porownaj 2 ostatnie runy\n"
         "/stats <origin> <dest> [cena] - statystyki cen trasy\n"
         "/rank <origin> - najtansze kierunki z lotniska\n"
+        "/leg <origin> <dest> - cena pojedynczego przelotu (obie strony)\n"
+        "/weather <iata> <miesiac> - typowa pogoda (np. /weather TIA 8)\n"
         "/alert <prog> [waluta] - sprawdz prog cenowy\n"
         "/find <skad> <dokad> <od> <do> [oneway] - wyszukaj loty\n"
         "/search <url> - scrapuj URL AZair (30-60s)\n"
@@ -194,6 +199,51 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @authorized_only
+async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Uzycie: /weather <iata> <miesiac>\n"
+            "Typowa pogoda klimatyczna dla lotniska.\n"
+            "Np: /weather TIA 8  (Tirana w sierpniu)"
+        )
+        return
+    iata = context.args[0].upper()
+    try:
+        month = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("Miesiac musi byc liczba 1-12.")
+        return
+    if not (1 <= month <= 12):
+        await update.message.reply_text("Miesiac musi byc 1-12.")
+        return
+
+    w = await asyncio.to_thread(weather_for, iata, month, _db_path())
+    if w is None:
+        await update.message.reply_text(
+            f"Brak danych pogodowych dla {iata} (nieznane lotnisko lub blad API)."
+        )
+        return
+    await update.message.reply_text(f"🌍 {iata}, miesiac {month:02d}\n{w.summary()}")
+
+
+@authorized_only
+async def cmd_leg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Uzycie: /leg <origin> <destination>\n"
+            "Cena POJEDYNCZEGO przelotu (nie calej podrozy) w obie strony.\n"
+            "Np: /leg WAW TIA"
+        )
+        return
+    origin = context.args[0].upper()
+    destination = context.args[1].upper()
+    db = _db_path()
+    there = direction_stats(origin, destination, db_path=db)
+    back = direction_stats(destination, origin, db_path=db)
+    await update.message.reply_text(format_direction(there, back, origin, destination))
+
+
+@authorized_only
 async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Uzycie: /alert <prog> [waluta]\nNp: /alert 30 EUR")
@@ -252,6 +302,17 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"✅ Znalazlem {result.offers_count} ofert (run #{result.run_id})\n\n"
         + format_offers_list(offers, max_items=5)
     )
+
+    # Pogoda w destynacji (tylko dla konkretnego celu, nie anywhere)
+    if not req.is_anywhere:
+        try:
+            month = int(dep_date.split("-")[1])
+            w = await asyncio.to_thread(weather_for, req.destination, month, _db_path())
+            if w is not None:
+                msg += f"\n\n🌍 Pogoda {req.destination} (typowo):\n{w.summary()}"
+        except (ValueError, IndexError):
+            pass
+
     await update.message.reply_text(msg)
 
 
@@ -301,6 +362,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("compare", cmd_compare))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("rank", cmd_rank))
+    app.add_handler(CommandHandler("leg", cmd_leg))
+    app.add_handler(CommandHandler("weather", cmd_weather))
     app.add_handler(CommandHandler("alert", cmd_alert))
     app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("search", cmd_search))

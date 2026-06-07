@@ -14,6 +14,7 @@ from services.alert_service import check_threshold
 from services.analytics_service import (
     cheapest_weekday,
     destination_ranking,
+    direction_stats,
     price_percentile,
     route_price_stats,
 )
@@ -169,6 +170,30 @@ def cmd_rank(args) -> int:
     return 0
 
 
+def cmd_leg(args) -> int:
+    o, d = args.origin.upper(), args.destination.upper()
+    there = direction_stats(o, d, db_path=args.db)
+    back = direction_stats(d, o, db_path=args.db)
+    if there is None and back is None:
+        print(f"Brak danych o przelotach {o} <-> {d}.")
+        return 0
+    print("Ceny pojedynczego przelotu (na poziomie nog, EUR):")
+    if there:
+        print(f"  {o}->{d}: min {there.min_price:.2f} mediana {there.median_price:.2f} ({there.count} obs.)")
+    else:
+        print(f"  {o}->{d}: brak danych")
+    if back:
+        print(f"  {d}->{o}: min {back.min_price:.2f} mediana {back.median_price:.2f} ({back.count} obs.)")
+    else:
+        print(f"  {d}->{o}: brak danych")
+    if there and back:
+        diff = back.median_price - there.median_price
+        if abs(diff) >= 0.01:
+            droz = d if diff < 0 else o
+            print(f"  Asymetria: powrot do {droz} drozszy o {abs(diff):.2f} EUR (mediana)")
+    return 0
+
+
 def cmd_alert(args) -> int:
     result = check_threshold(
         threshold=args.threshold,
@@ -241,6 +266,10 @@ def build_parser() -> argparse.ArgumentParser:
     rank_p.add_argument("--origin", required=True)
     rank_p.add_argument("--limit", type=int, default=20)
 
+    leg_p = sub.add_parser("leg", help="Cena pojedynczego przelotu (obie strony)")
+    leg_p.add_argument("--origin", required=True)
+    leg_p.add_argument("--destination", required=True)
+
     return parser
 
 
@@ -274,6 +303,7 @@ def main() -> None:
         "alert": cmd_alert,
         "stats": cmd_stats,
         "rank": cmd_rank,
+        "leg": cmd_leg,
     }
     sys.exit(handlers[args.command](args))
 

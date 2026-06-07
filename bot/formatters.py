@@ -10,6 +10,7 @@ from typing import List, Optional
 from services.alert_service import AlertResult
 from services.analytics_service import (
     DestinationRank,
+    DirectionStats,
     PercentileResult,
     PriceStats,
     WeekdayStat,
@@ -147,4 +148,45 @@ def format_ranking(origin: str, ranking: List[DestinationRank]) -> str:
     lines = [f"🏆 Najtansze kierunki z {origin} (EUR):", ""]
     for r in ranking:
         lines.append(f"{r.destination}: min {r.min_price:.2f}  (sr. {r.avg_price:.2f}, {r.count} ofert)")
+    return "\n".join(lines)
+
+
+def format_direction(
+    there: Optional[DirectionStats],
+    back: Optional[DirectionStats],
+    origin: str,
+    destination: str,
+) -> str:
+    """Cena pojedynczego przelotu w obie strony + asymetria kierunku."""
+    if there is None and back is None:
+        return f"Brak danych o przelotach {origin} <-> {destination}."
+
+    lines = [f"🧭 Ceny pojedynczego przelotu (na poziomie nog):", ""]
+
+    if there is not None:
+        lines.append(
+            f"✈️ {there.origin} → {there.destination}  "
+            f"min {there.min_price:.2f}  mediana {there.median_price:.2f}  "
+            f"({there.count} obs.)"
+        )
+    else:
+        lines.append(f"✈️ {origin} → {destination}: brak danych")
+
+    if back is not None:
+        lines.append(
+            f"✈️ {back.origin} → {back.destination}  "
+            f"min {back.min_price:.2f}  mediana {back.median_price:.2f}  "
+            f"({back.count} obs.)"
+        )
+    else:
+        lines.append(f"✈️ {destination} → {origin}: brak danych")
+
+    # Asymetria kierunku - jesli mamy obie mediany
+    if there is not None and back is not None:
+        diff = back.median_price - there.median_price
+        if abs(diff) >= 0.01:
+            droz = destination if diff < 0 else origin
+            lines.append("")
+            lines.append(f"↔️ Asymetria: powrot do {droz} drozszy o {abs(diff):.2f} EUR (mediana)")
+
     return "\n".join(lines)

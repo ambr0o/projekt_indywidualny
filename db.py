@@ -57,6 +57,48 @@ def create_flight_offers_table(conn):
     conn.commit()
 
 
+def create_weather_cache_table(conn):
+    """Cache pogodowy - klucz (iata, month), zeby nie pytac Open-Meteo wielokrotnie."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weather_cache (
+            iata TEXT NOT NULL,
+            month INTEGER NOT NULL,
+            temp_max REAL,
+            temp_min REAL,
+            rain_mm REAL,
+            rainy_days INTEGER,
+            kind TEXT,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (iata, month)
+        )
+        """
+    )
+    conn.commit()
+
+
+def get_cached_weather(conn, iata, month):
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT temp_max, temp_min, rain_mm, rainy_days, kind FROM weather_cache WHERE iata=? AND month=?",
+        (iata.upper(), month),
+    ).fetchone()
+    return row
+
+
+def save_weather_cache(conn, iata, month, temp_max, temp_min, rain_mm, rainy_days, kind):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT OR REPLACE INTO weather_cache(iata, month, temp_max, temp_min, rain_mm, rainy_days, kind, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (iata.upper(), month, temp_max, temp_min, rain_mm, rainy_days, kind),
+    )
+    conn.commit()
+
+
 def insert_search_run(conn, search_mode, params, status):
     if status not in ALLOWED_SEARCH_STATUSES:
         raise ValueError(f"Invalid status '{status}'.")
@@ -216,6 +258,57 @@ def fetch_destinations_from(conn, origin):
         """,
         (origin.upper(),),
     ).fetchall()
+
+
+def fetch_direction_leg_prices(conn, origin, destination):
+    """Zwraca liste cen POJEDYNCZEGO przelotu origin->destination (nogi).
+
+    Zbiera z trzech zrodel, wszystko w jednej jednostce 'cena jednego lotu':
+      1. one-waye o->d              -> price (cala cena one-waya = przelot o->d)
+      2. round-tripy o->d           -> outbound_price (noga "tam" leci o->d)
+      3. round-tripy d->o           -> return_price (noga "powrot" podrozy d->o leci o->d)
+
+    Zwraca [float, ...].
+    """
+    o = origin.upper()
+    d = destination.upper()
+    cur = conn.cursor()
+
+    prices = []
+
+    # 1 + 2: wiersze gdzie podroz to o->d
+    rows = cur.execute(
+        """
+        SELECT price, outbound_price, return_date
+        FROM flight_offers
+        WHERE origin = ? AND destination = ?
+        """,
+        (o, d),
+    ).fetchall()
+    for price, outbound_price, return_date in rows:
+        if return_date is None:
+            # one-way o->d: cala cena to przelot o->d
+            if price is not None:
+                prices.append(price)
+        else:
+            # round-trip o->d: noga "tam" to przelot o->d
+            if outbound_price is not None:
+                prices.append(outbound_price)
+
+    # 3: round-tripy zapisane jako d->o - ich noga "powrot" leci o->d
+    rows = cur.execute(
+        """
+        SELECT return_price
+        FROM flight_offers
+        WHERE origin = ? AND destination = ? AND return_date IS NOT NULL
+        """,
+        (d, o),
+    ).fetchall()
+    for (return_price,) in rows:
+        if return_price is not None:
+            prices.append(return_price)
+
+    return prices
 
 
 def fetch_prices_by_weekday(conn, origin, destination):

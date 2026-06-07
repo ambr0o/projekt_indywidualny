@@ -24,10 +24,17 @@ _AIRPORTS_PATH = Path(__file__).resolve().parent.parent / "data" / "airports.jso
 
 
 def _load_airport_labels() -> dict:
-    """Wczytuje mape kod IATA -> etykieta AZair. Pomija klucze zaczynajace sie od '_'."""
+    """Wczytuje mape kod IATA -> etykieta AZair. Pomija klucze zaczynajace sie od '_'.
+
+    airports.json ma format {kod: {label, lat, lon}} - wyciagamy sam label.
+    """
     try:
         raw = json.loads(_AIRPORTS_PATH.read_text(encoding="utf-8"))
-        return {k: v for k, v in raw.items() if not k.startswith("_")}
+        return {
+            k: v["label"]
+            for k, v in raw.items()
+            if not k.startswith("_") and isinstance(v, dict) and "label" in v
+        }
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
