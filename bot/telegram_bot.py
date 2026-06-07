@@ -55,6 +55,7 @@ from services.analytics_service import (
 from services.find_service import build_find_request
 from services.query_service import compare_runs, get_best, list_offers, list_runs
 from services.search_service import search_and_save
+from services.watch_service import add_watch, list_watches, remove_watch
 from services.weather_service import weather_for
 
 
@@ -118,6 +119,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/rank <origin> - najtansze kierunki z lotniska\n"
         "/leg <origin> <dest> - cena pojedynczego przelotu (obie strony)\n"
         "/weather <iata> <miesiac> - typowa pogoda (np. /weather TIA 8)\n"
+        "/watch <skad> <dokad> <prog> [oneway] - pilnuj ceny, powiadom gdy spadnie\n"
+        "/mywatches - twoje obserwacje\n"
+        "/unwatch <numer> - usun obserwacje\n"
         "/alert <prog> [waluta] - sprawdz prog cenowy\n"
         "/find <skad> <dokad> <od> <do> [oneway] - wyszukaj loty\n"
         "/search <url> - scrapuj URL AZair (30-60s)\n"
@@ -244,6 +248,112 @@ async def cmd_leg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @authorized_only
+async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Uzycie: /watch <skad> <dokad> <prog> [data-od data-do] [oneway] [always]\n\n"
+            "Przyklady:\n"
+            "/watch WAW TIA 60                          (najblizsze ~2 mies.)\n"
+            "/watch WAW TIA 130 2026-08-15 2026-08-18   (konkretny termin)\n"
+            "/watch WAW TIA 50 2026-07-01 2026-08-31    (elastycznie, cale lato)\n"
+            "/watch KRK FCO 100 always                  (cena przy kazdym sprawdzeniu)\n\n"
+            "always = powiadom z aktualna cena zawsze; domyslnie tylko gdy <= prog."
+        )
+        return
+
+    origin = context.args[0].upper()
+    destination = context.args[1].upper()
+    try:
+        threshold = float(context.args[2].replace(",", "."))
+    except ValueError:
+        await update.message.reply_text("Prog musi byc liczba (np. 60 lub 59.99).")
+        return
+
+    # Parsuj pozostale argumenty po typie - kolejnosc dowolna
+    rest = context.args[3:]
+    oneway = False
+    mode = "alert"
+    dates = []
+    for arg in rest:
+        a = arg.lower()
+        if a == "oneway":
+            oneway = True
+        elif a == "always":
+            mode = "always"
+        elif a == "alert":
+            mode = "alert"
+        elif len(arg) == 10 and arg.count("-") == 2:
+            dates.append(arg)
+        # nieznane argumenty ignorujemy
+
+    dep_date = dates[0] if len(dates) >= 1 else None
+    arr_date = dates[1] if len(dates) >= 2 else None
+    if len(dates) == 1:
+        await update.message.reply_text("Podaj obie daty (od i do) albo zadnej.")
+        return
+
+    result = add_watch(
+        chat_id=update.effective_chat.id,
+        origin=origin, destination=destination,
+        threshold=threshold, oneway=oneway,
+        dep_date=dep_date, arr_date=arr_date, mode=mode,
+        db_path=_db_path(),
+    )
+    if result.error:
+        await update.message.reply_text(f"❌ {result.error}")
+        return
+
+    typ = "one-way" if oneway else "round-trip"
+    okno = f"{dep_date}–{arr_date}" if dep_date else "najblizsze ~2 mies."
+    tryb = "zawsze podaje cene" if mode == "always" else f"gdy <= {threshold:.0f} EUR"
+    await update.message.reply_text(
+        f"✅ Obserwacja #{result.watch_id}: {origin}→{destination} ({typ})\n"
+        f"📅 {okno}\n"
+        f"🔔 {tryb}"
+    )
+
+
+@authorized_only
+async def cmd_mywatches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    watches = list_watches(chat_id=update.effective_chat.id, db_path=_db_path())
+    if not watches:
+        await update.message.reply_text(
+            "Nie masz aktywnych obserwacji. Dodaj: /watch WAW TIA 60"
+        )
+        return
+    lines = ["👁 Twoje obserwacje:", ""]
+    for w in watches:
+        typ = "OW" if w.oneway else "RT"
+        okno = f"{w.dep_date}–{w.arr_date}" if w.dep_date else "~2 mies."
+        tryb = "always" if w.mode == "always" else "alert"
+        last = f", ost. {w.last_price:.2f}" if w.last_price is not None else ""
+        lines.append(
+            f"#{w.id} {w.origin}→{w.destination} [{typ}] prog {w.threshold:.0f} "
+            f"| {okno} | {tryb}{last}"
+        )
+    lines.append("")
+    lines.append("Usun: /unwatch <numer>")
+    await update.message.reply_text("\n".join(lines))
+
+
+@authorized_only
+async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Uzycie: /unwatch <numer>\nNumery zobaczysz przez /mywatches")
+        return
+    try:
+        watch_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Numer musi byc liczba.")
+        return
+    ok = remove_watch(chat_id=update.effective_chat.id, watch_id=watch_id, db_path=_db_path())
+    if ok:
+        await update.message.reply_text(f"✅ Usunieto obserwacje #{watch_id}.")
+    else:
+        await update.message.reply_text(f"Nie znaleziono Twojej obserwacji #{watch_id}.")
+
+
+@authorized_only
 async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Uzycie: /alert <prog> [waluta]\nNp: /alert 30 EUR")
@@ -364,6 +474,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("rank", cmd_rank))
     app.add_handler(CommandHandler("leg", cmd_leg))
     app.add_handler(CommandHandler("weather", cmd_weather))
+    app.add_handler(CommandHandler("watch", cmd_watch))
+    app.add_handler(CommandHandler("mywatches", cmd_mywatches))
+    app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("alert", cmd_alert))
     app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("search", cmd_search))

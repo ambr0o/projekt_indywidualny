@@ -99,6 +99,105 @@ def save_weather_cache(conn, iata, month, temp_max, temp_min, rain_mm, rainy_day
     conn.commit()
 
 
+def create_watched_routes_table(conn):
+    """Obserwacje cenowe uzytkownikow (rdzen monitora cen).
+
+    Kazdy wiersz = jeden uzytkownik (chat_id) obserwujacy jedna trase z progiem.
+    last_price/last_checked uzupelniane przez cron przy kazdym sprawdzeniu.
+    dep_date/arr_date - okno dat wylotu (NULL = domyslne okno crona).
+    mode - 'alert' (gdy <= prog) lub 'always' (cena przy kazdym sprawdzeniu).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS watched_routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            threshold REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'EUR',
+            oneway INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            last_price REAL,
+            last_checked TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    # Lekka migracja: dodaj kolumny gdy brak (idempotentne)
+    existing = {row[1] for row in cur.execute("PRAGMA table_info(watched_routes)").fetchall()}
+    new_columns = {
+        "dep_date": "TEXT",
+        "arr_date": "TEXT",
+        "mode": "TEXT NOT NULL DEFAULT 'alert'",
+    }
+    for col, col_type in new_columns.items():
+        if col not in existing:
+            cur.execute(f"ALTER TABLE watched_routes ADD COLUMN {col} {col_type}")
+    conn.commit()
+
+
+def insert_watched_route(conn, chat_id, origin, destination, threshold,
+                         currency="EUR", oneway=False,
+                         dep_date=None, arr_date=None, mode="alert"):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO watched_routes(chat_id, origin, destination, threshold, currency,
+                                   oneway, active, created_at, dep_date, arr_date, mode)
+        VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'), ?, ?, ?)
+        """,
+        (chat_id, origin.upper(), destination.upper(), threshold, currency,
+         1 if oneway else 0, dep_date, arr_date, mode),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def fetch_watched_routes(conn, chat_id=None, only_active=True):
+    """Obserwacje - wszystkie, danego uzytkownika, opcjonalnie tylko aktywne."""
+    cur = conn.cursor()
+    query = """
+        SELECT id, chat_id, origin, destination, threshold, currency, oneway,
+               active, last_price, last_checked, created_at, dep_date, arr_date, mode
+        FROM watched_routes
+        WHERE 1=1
+    """
+    args = []
+    if chat_id is not None:
+        query += " AND chat_id = ?"
+        args.append(chat_id)
+    if only_active:
+        query += " AND active = 1"
+    query += " ORDER BY id ASC"
+    return cur.execute(query, args).fetchall()
+
+
+def deactivate_watched_route(conn, watch_id, chat_id):
+    """Dezaktywuje obserwacje - tylko jesli nalezy do danego chat_id (bezpieczenstwo).
+
+    Zwraca True gdy cos zmieniono, False gdy nie znaleziono/nie nalezy do usera.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE watched_routes SET active = 0 WHERE id = ? AND chat_id = ? AND active = 1",
+        (watch_id, chat_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_watched_route_check(conn, watch_id, last_price):
+    """Zapisuje wynik ostatniego sprawdzenia przez cron."""
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE watched_routes SET last_price = ?, last_checked = datetime('now') WHERE id = ?",
+        (last_price, watch_id),
+    )
+    conn.commit()
+
+
 def insert_search_run(conn, search_mode, params, status):
     if status not in ALLOWED_SEARCH_STATUSES:
         raise ValueError(f"Invalid status '{status}'.")

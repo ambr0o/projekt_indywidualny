@@ -446,6 +446,22 @@ def scrape_flight_from_results_url_full(results_url, max_results=20):
             except Exception:
                 page.wait_for_timeout(4000)
 
+            # AZair dociaga oferty AJAX-em po pojawieniu sie pierwszej.
+            # Czekamy az liczba div.result przestanie rosnac (stabilizacja),
+            # inaczej zlapiemy tylko czesc ofert (czesto te drozsze/wolniej ladowane).
+            prev_count = -1
+            stable_reads = 0
+            for _ in range(20):  # max ~20s
+                count = page.locator("div.result").count()
+                if count == prev_count and count > 0:
+                    stable_reads += 1
+                    if stable_reads >= 3:  # 3 odczyty bez zmian = zaladowane
+                        break
+                else:
+                    stable_reads = 0
+                prev_count = count
+                page.wait_for_timeout(1000)
+
             if page.locator("div.noResults").count() > 0:
                 browser.close()
                 return ScrapeResult(

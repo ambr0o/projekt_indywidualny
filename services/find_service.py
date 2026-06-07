@@ -115,6 +115,7 @@ def build_find_request(
             azair_label(origin), "Anywhere [XXX]", dep_date, arr_date,
             src_codes=[origin], dst_codes=None, dst_typed_text="any",
             dst_mc="", currency="EUR", is_oneway=oneway_str,
+            max_chng="0",   # tylko loty bezposrednie - model 2-nogowy zawsze poprawny
         )
         return FindRequest(
             url=url, origin=origin, destination="ANYWHERE",
@@ -126,6 +127,7 @@ def build_find_request(
         azair_label(origin), azair_label(destination), dep_date, arr_date,
         src_codes=[origin], dst_codes=[destination],
         currency="EUR", is_oneway=oneway_str,
+        max_chng="0",   # tylko loty bezposrednie
     )
 
     return FindRequest(
