@@ -1,5 +1,4 @@
 import json
-import sqlite3
 
 ALLOWED_SEARCH_STATUSES = ["started", "done", "failed"]
 DEFAULT_DB_PATH = "database.db"
@@ -54,6 +53,15 @@ def create_flight_offers_table(conn):
     for col, col_type in new_columns.items():
         if col not in existing:
             cur.execute(f"ALTER TABLE flight_offers ADD COLUMN {col} {col_type}")
+
+    # Indeksy pod zapytania analityczne (filtr po trasie) i lookup po runie.
+    # Niemal kazda funkcja analityczna filtruje po (origin, destination).
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_offers_route ON flight_offers(origin, destination)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_offers_run ON flight_offers(search_run_id)"
+    )
     conn.commit()
 
 
@@ -464,116 +472,74 @@ def get_best_offer(conn, search_run_id=None):
     return rows[0]
 
 
-def get_latest_done_run(conn, origin=None, destination=None):
-    cur = conn.cursor()
-    rows = cur.execute(
-        """
-        SELECT id, search_mode, params_json, status, created_at
-        FROM search_runs
-        WHERE status = 'done'
-        ORDER BY id DESC
-        LIMIT 50
-        """
-    ).fetchall()
-
-    for row in rows:
-        params = json.loads(row[2])
-        if origin and params.get("from", "").upper() != origin.upper():
-            continue
-        if destination and params.get("to", "").upper() != destination.upper():
-            continue
-        return row
-    if len(rows) > 0 and origin is None and destination is None:
-        return rows[0]
-    return None
-
-
 def compare_latest_runs(conn, origin=None, destination=None):
+    """Porownuje cene PRZELOTU origin->destination miedzy 2 ostatnimi runami.
+
+    Liczy na poziomie nogi (jak fetch_direction_leg_prices), wiec nie miesza
+    round-tripow z one-wayami - spojna jednostka 'cena jednego lotu'.
+    Wymaga origin i destination (porownanie ma sens tylko dla konkretnego kierunku).
+    """
+    if not origin or not destination:
+        return None
+    o, d = origin.upper(), destination.upper()
     cur = conn.cursor()
-    query = """
-        SELECT r.id, r.params_json, r.created_at,
-               MIN(o.price) AS min_price, o.currency
+
+    # Dwa ostatnie udane runy ktore zawieraja kierunek o->d (jako noga tam, powrot lub one-way)
+    runs = cur.execute(
+        """
+        SELECT DISTINCT r.id, r.created_at
         FROM search_runs r
         JOIN flight_offers o ON o.search_run_id = r.id
         WHERE r.status = 'done'
-    """
-    args = []
-    if origin:
-        query += " AND o.origin = ?"
-        args.append(origin.upper())
-    if destination:
-        query += " AND o.destination LIKE ?"
-        args.append(f"%{destination.upper()}%")
-    query += """
-        GROUP BY r.id
+          AND (
+            (o.origin = ? AND o.destination = ?)        -- o->d (one-way price albo outbound_price)
+            OR (o.origin = ? AND o.destination = ? AND o.return_date IS NOT NULL)  -- d->o, return_price
+          )
         ORDER BY r.id DESC
         LIMIT 2
-    """
-    rows = cur.execute(query, args).fetchall()
-    if len(rows) < 2:
+        """,
+        (o, d, d, o),
+    ).fetchall()
+    if len(runs) < 2:
         return None
-    newer, older = rows[0], rows[1]
-    diff = older[3] - newer[3]
+
+    def min_leg_price(run_id):
+        """Najtansza cena przelotu o->d w danym runie (z nog)."""
+        prices = []
+        for price, outbound_price, return_date in cur.execute(
+            "SELECT price, outbound_price, return_date FROM flight_offers "
+            "WHERE search_run_id = ? AND origin = ? AND destination = ?",
+            (run_id, o, d),
+        ).fetchall():
+            if return_date is None:
+                if price is not None:
+                    prices.append(price)
+            elif outbound_price is not None:
+                prices.append(outbound_price)
+        for (return_price,) in cur.execute(
+            "SELECT return_price FROM flight_offers "
+            "WHERE search_run_id = ? AND origin = ? AND destination = ? AND return_date IS NOT NULL",
+            (run_id, d, o),
+        ).fetchall():
+            if return_price is not None:
+                prices.append(return_price)
+        return min(prices) if prices else None
+
+    newer_id, newer_at = runs[0]
+    older_id, older_at = runs[1]
+    newer_price = min_leg_price(newer_id)
+    older_price = min_leg_price(older_id)
+    if newer_price is None or older_price is None:
+        return None
+
     return {
-        "newer_run_id": newer[0],
-        "older_run_id": older[0],
-        "newer_price": newer[3],
-        "older_price": older[3],
-        "currency": newer[4],
-        "diff": diff,
-        "newer_at": newer[2],
-        "older_at": older[2],
+        "newer_run_id": newer_id,
+        "older_run_id": older_id,
+        "newer_price": newer_price,
+        "older_price": older_price,
+        "currency": "EUR",
+        "diff": older_price - newer_price,
+        "newer_at": newer_at,
+        "older_at": older_at,
     }
 
-
-def format_offer_row(row):
-    (
-        offer_id,
-        run_id,
-        origin,
-        destination,
-        departure_date,
-        return_date,
-        price,
-        currency,
-        airline,
-        flight_number,
-        created_at,
-    ) = row
-    ret = return_date if return_date else "-"
-    return (
-        f"#{offer_id} run={run_id} {origin}->{destination} "
-        f"out={departure_date} ret={ret} "
-        f"{price:.2f} {currency} {airline} {flight_number} ({created_at})"
-    )
-
-
-def print_offers(conn, search_run_id=None, limit=20):
-    rows = fetch_flight_offers(conn, search_run_id=search_run_id, limit=limit)
-    if len(rows) == 0:
-        print("Brak ofert w bazie.")
-        return
-    for row in rows:
-        print(format_offer_row(row))
-
-
-def print_search_runs(conn, limit=10):
-    rows = fetch_search_runs(conn, limit=limit)
-    if len(rows) == 0:
-        print("Brak wyszukiwan w bazie.")
-        return
-    for row in rows:
-        run_id, mode, params_json, status, created_at = row
-        params = json.loads(params_json)
-        print(
-            f"#{run_id} [{status}] {mode} "
-            f"{params.get('from', '?')}->{params.get('to', '?')} ({created_at})"
-        )
-
-
-def list_flight_offers(conn, search_run_id):
-    print_offers(conn, search_run_id=search_run_id)
-
-
-def list_search_runs(conn, limit=5):
-    print_search_runs(conn, limit=limit)

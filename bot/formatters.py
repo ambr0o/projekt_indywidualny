@@ -1,8 +1,3 @@
-"""Formatery wynikow z service layer do tekstu czytelnego w Telegramie.
-
-Telegram wspiera MarkdownV2, ale wymaga eskejpu wielu znakow specjalnych.
-Dla bezpieczenstwa uzywamy zwyklego tekstu z emoji - dziala wszedzie.
-"""
 
 import json
 from typing import List, Optional
@@ -71,10 +66,10 @@ def format_comparison(result: Optional[ComparisonResult]) -> str:
         direction, emoji = "bez zmian", "➖"
 
     return (
-        f"{emoji} Porownanie 2 ostatnich runow:\n\n"
-        f"Run #{result.newer_run_id} ({result.newer_at})\n"
+        f"{emoji} Cena przelotu — porownanie 2 ostatnich wyszukiwan:\n\n"
+        f"Nowsze (#{result.newer_run_id}, {result.newer_at})\n"
         f"   {result.newer_price:.2f} {result.currency}\n\n"
-        f"Run #{result.older_run_id} ({result.older_at})\n"
+        f"Starsze (#{result.older_run_id}, {result.older_at})\n"
         f"   {result.older_price:.2f} {result.currency}\n\n"
         f"Roznica: {abs(result.diff):.2f} {result.currency} ({direction})"
     )
@@ -161,7 +156,7 @@ def format_direction(
     if there is None and back is None:
         return f"Brak danych o przelotach {origin} <-> {destination}."
 
-    lines = [f"🧭 Ceny pojedynczego przelotu (na poziomie nog):", ""]
+    lines = ["🧭 Ceny pojedynczego przelotu (na poziomie nog):", ""]
 
     if there is not None:
         lines.append(

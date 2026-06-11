@@ -22,7 +22,6 @@ import asyncio
 import logging
 import os
 import random
-import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -35,7 +34,6 @@ from services.find_service import build_find_request
 from services.query_service import get_best
 from services.search_service import search_and_save
 from services.watch_service import all_active_watches
-from services.weather_service import weather_for
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -180,7 +178,8 @@ async def run_once() -> None:
             update_watched_route_check(conn, watch.id, current_price)
 
             if i < len(watches):
-                time.sleep(random.uniform(MIN_PAUSE, MAX_PAUSE))
+                # async sleep - nie blokuje event loopa (jestesmy w funkcji async)
+                await asyncio.sleep(random.uniform(MIN_PAUSE, MAX_PAUSE))
     finally:
         conn.close()
 

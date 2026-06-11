@@ -96,11 +96,14 @@ def cmd_runs(args) -> int:
 
 
 def cmd_compare(args) -> int:
+    if not args.origin or not args.destination:
+        print("compare wymaga --origin i --destination (np. --origin WAW --destination TIA)")
+        return 1
     result: Optional[ComparisonResult] = compare_runs(
         db_path=args.db, origin=args.origin, destination=args.destination
     )
     if result is None:
-        print("Za malo udanych wyszukiwan do porownania (potrzeba 2).")
+        print("Za malo udanych wyszukiwan tej trasy do porownania (potrzeba 2).")
         return 0
 
     if result.diff > 0:
@@ -110,15 +113,16 @@ def cmd_compare(args) -> int:
     else:
         direction = "bez zmian"
 
+    print(f"Cena przelotu {args.origin.upper()}->{args.destination.upper()}:")
     print(
-        f"Run #{result.newer_run_id} ({result.newer_at}): "
+        f"  nowsze (#{result.newer_run_id}, {result.newer_at}): "
         f"{result.newer_price:.2f} {result.currency}"
     )
     print(
-        f"Run #{result.older_run_id} ({result.older_at}): "
+        f"  starsze (#{result.older_run_id}, {result.older_at}): "
         f"{result.older_price:.2f} {result.currency}"
     )
-    print(f"Roznica: {abs(result.diff):.2f} {result.currency} ({direction})")
+    print(f"  roznica: {abs(result.diff):.2f} {result.currency} ({direction})")
     return 0
 
 

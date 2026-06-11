@@ -114,7 +114,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/best - najtansza oferta z bazy\n"
         "/list [limit] - ostatnie oferty\n"
         "/runs [limit] - historia wyszukiwan\n"
-        "/compare [origin] [dest] - porownaj 2 ostatnie runy\n"
+        "/compare <skad> <dokad> - porownaj cene przelotu (2 ost. wyszukiwania)\n"
         "/stats <origin> <dest> [cena] - statystyki cen trasy\n"
         "/rank <origin> - najtansze kierunki z lotniska\n"
         "/leg <origin> <dest> - cena pojedynczego przelotu (obie strony)\n"
@@ -163,8 +163,15 @@ async def cmd_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @authorized_only
 async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    origin = context.args[0] if len(context.args) >= 1 else None
-    destination = context.args[1] if len(context.args) >= 2 else None
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Uzycie: /compare <skad> <dokad>\n"
+            "Porownuje cene przelotu miedzy 2 ostatnimi wyszukiwaniami.\n"
+            "Np: /compare WAW TIA"
+        )
+        return
+    origin = context.args[0].upper()
+    destination = context.args[1].upper()
     result = compare_runs(db_path=_db_path(), origin=origin, destination=destination)
     await update.message.reply_text(format_comparison(result))
 
