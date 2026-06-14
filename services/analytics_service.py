@@ -1,10 +1,11 @@
-"""Analityka cen lotow.
+"""Flight price analytics.
 
-Logika statystyczna operujaca na danych z bazy. Sygnatury sa trasa-centryczne
-(origin, destination) - dzieki temu te same funkcje dzialaja na danych z jednego
-scrape (Droga 1) jak i na historii zebranej w czasie (Droga 2), bez przepisywania.
+Statistical logic operating on the database data. The signatures are
+route-centric (origin, destination) - so the same functions work both on data
+from a single scrape (Path 1) and on history collected over time (Path 2),
+without rewriting.
 
-Baza jest jednowalutowa (EUR), wiec funkcje nie przejmuja sie waluta.
+The database is single-currency (EUR), so the functions do not deal with currency.
 """
 
 import statistics
@@ -15,6 +16,7 @@ from db import (
     DEFAULT_DB_PATH,
     fetch_destinations_from,
     fetch_direction_leg_prices,
+    fetch_price_history,
     fetch_prices_by_weekday,
     fetch_prices_for_route,
 )
@@ -34,7 +36,7 @@ WEEKDAY_NAMES = {
 
 @dataclass
 class PriceStats:
-    """Statystyki cenowe dla trasy."""
+    """Price statistics for a route."""
     origin: str
     destination: str
     count: int
@@ -42,13 +44,13 @@ class PriceStats:
     max_price: float
     avg_price: float
     median_price: float
-    stdev_price: float  # 0.0 gdy < 2 obserwacji
+    stdev_price: float  # 0.0 when < 2 observations
 
 
 @dataclass
 class WeekdayStat:
-    """Srednia cena dla konkretnego dnia tygodnia wylotu."""
-    weekday: str          # nazwa po polsku
+    """Average price for a specific departure weekday."""
+    weekday: str          # name in Polish
     avg_price: float
     min_price: float
     count: int
@@ -56,7 +58,7 @@ class WeekdayStat:
 
 @dataclass
 class DestinationRank:
-    """Jedna pozycja w rankingu destynacji z danego lotniska."""
+    """One position in the ranking of destinations from a given airport."""
     destination: str
     min_price: float
     avg_price: float
@@ -65,21 +67,21 @@ class DestinationRank:
 
 @dataclass
 class PercentileResult:
-    """Gdzie podana cena lezy w rozkladzie historycznym trasy."""
+    """Where a given price lies in the route's historical distribution."""
     origin: str
     destination: str
     price: float
-    percentile: float     # 0-100; nizszy = taniej niz wiekszosc
-    cheaper_than_pct: float  # % obserwacji drozszych od podanej ceny
+    percentile: float     # 0-100; lower = cheaper than most
+    cheaper_than_pct: float  # % of observations more expensive than the given price
     sample_size: int
 
 
 @dataclass
 class DirectionStats:
-    """Statystyki ceny POJEDYNCZEGO przelotu (nogi) origin->destination.
+    """Price statistics for a SINGLE flight (leg) origin->destination.
 
-    W przeciwienstwie do PriceStats (cena calej podrozy), tu liczymy cene
-    jednego lotu - zbierana z one-wayow i nog round-tripow w tym kierunku.
+    Unlike PriceStats (price of the whole trip), here we compute the price of
+    one flight - collected from one-ways and round-trip legs in this direction.
     """
     origin: str
     destination: str
@@ -95,7 +97,7 @@ def route_price_stats(
     destination: str,
     db_path: str = DEFAULT_DB_PATH,
 ) -> Optional[PriceStats]:
-    """Zwraca statystyki cenowe trasy albo None gdy brak danych."""
+    """Return price statistics for a route, or None when there is no data."""
     conn = open_db(db_path)
     try:
         rows = fetch_prices_for_route(conn, origin, destination)
@@ -123,7 +125,7 @@ def cheapest_weekday(
     destination: str,
     db_path: str = DEFAULT_DB_PATH,
 ) -> List[WeekdayStat]:
-    """Zwraca statystyki cen per dzien tygodnia wylotu, posortowane od najtanszego."""
+    """Return price stats per departure weekday, sorted cheapest first."""
     conn = open_db(db_path)
     try:
         rows = fetch_prices_by_weekday(conn, origin, destination)
@@ -147,7 +149,7 @@ def destination_ranking(
     db_path: str = DEFAULT_DB_PATH,
     limit: int = 20,
 ) -> List[DestinationRank]:
-    """Ranking destynacji z danego lotniska, od najtanszej (po min cenie)."""
+    """Ranking of destinations from a given airport, cheapest first (by min price)."""
     conn = open_db(db_path)
     try:
         rows = fetch_destinations_from(conn, origin)
@@ -167,10 +169,10 @@ def price_percentile(
     destination: str,
     db_path: str = DEFAULT_DB_PATH,
 ) -> Optional[PercentileResult]:
-    """Liczy gdzie podana cena lezy w rozkladzie historycznym trasy.
+    """Compute where a given price lies in the route's historical distribution.
 
-    percentile = % obserwacji <= podanej ceny (niski = okazja).
-    Zwraca None gdy brak danych dla trasy.
+    percentile = % of observations <= the given price (low = a deal).
+    Returns None when there is no data for the route.
     """
     conn = open_db(db_path)
     try:
@@ -201,10 +203,10 @@ def direction_stats(
     destination: str,
     db_path: str = DEFAULT_DB_PATH,
 ) -> Optional[DirectionStats]:
-    """Statystyki ceny pojedynczego przelotu origin->destination (na poziomie nog).
+    """Price statistics for a single flight origin->destination (at the leg level).
 
-    Laczy ceny z one-wayow + nog round-tripow w tym kierunku. Wszystko w jednej
-    jednostce 'cena jednego lotu', wiec porownywalne. Zwraca None gdy brak danych.
+    Combines prices from one-ways + round-trip legs in this direction. Everything
+    in one unit 'price of one flight', so comparable. Returns None when no data.
     """
     conn = open_db(db_path)
     try:
@@ -223,4 +225,106 @@ def direction_stats(
         max_price=max(prices),
         avg_price=statistics.mean(prices),
         median_price=statistics.median(prices),
+    )
+
+
+@dataclass
+class PriceHistoryPoint:
+    """A single price measurement of a flight over time."""
+    checked_at: str   # the run's created_at (when collected)
+    price: float
+
+
+@dataclass
+class PriceHistory:
+    """Price history of a SPECIFIC flight (route + departure date) over time.
+
+    This is the 'honest' analytics of Path A: it compares the same flight with
+    itself at different collection moments, instead of mixing departure dates.
+    """
+    origin: str
+    destination: str
+    departure_date: str
+    points: List[PriceHistoryPoint]
+
+    @property
+    def count(self) -> int:
+        """Number of recorded measurements."""
+        return len(self.points)
+
+    @property
+    def first_price(self) -> float:
+        """Price at the first measurement."""
+        return self.points[0].price
+
+    @property
+    def last_price(self) -> float:
+        """Price at the most recent measurement."""
+        return self.points[-1].price
+
+    @property
+    def min_price(self) -> float:
+        """Lowest recorded price."""
+        return min(p.price for p in self.points)
+
+    @property
+    def max_price(self) -> float:
+        """Highest recorded price."""
+        return max(p.price for p in self.points)
+
+    @property
+    def change(self) -> float:
+        """Difference last - first (negative = price dropped)."""
+        return self.last_price - self.first_price
+
+    @property
+    def trend(self) -> str:
+        """'down' | 'up' | 'flat' based on the latest price movement."""
+        if self.count < 2:
+            return "flat"
+        diff = self.change
+        if diff < -0.01:
+            return "down"
+        if diff > 0.01:
+            return "up"
+        return "flat"
+
+
+def price_history(
+    origin: str,
+    destination: str,
+    departure_date: str,
+    db_path: str = DEFAULT_DB_PATH,
+) -> Optional[PriceHistory]:
+    """Price history of a specific flight (route + departure date) over time.
+
+    This is "honest" analytics: it compares THE SAME flight with itself at
+    different collection moments, instead of mixing different departure dates
+    (which would distort averages and minima).
+
+    Args:
+        origin (str): IATA code of the origin airport.
+        destination (str): IATA code of the destination.
+        departure_date (str): Departure date "YYYY-MM-DD" (day only).
+        db_path (str): Path to the SQLite database.
+
+    Returns:
+        Optional[PriceHistory]: History with points over time and a trend,
+        or None when there is no data for this flight.
+    """
+    conn = open_db(db_path)
+    try:
+        rows = fetch_price_history(conn, origin, destination, departure_date)
+    finally:
+        conn.close()
+
+    if not rows:
+        return None
+
+    points = [PriceHistoryPoint(checked_at=ca, price=p) for ca, p in rows]
+    return PriceHistory(
+        origin=origin.upper(),
+        destination=destination.upper(),
+        departure_date=departure_date[:10],
+        points=points,
     )

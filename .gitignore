@@ -34,3 +34,6 @@ DESIGN.md
 
 # Backupy bazy
 *.db.bak
+
+# Sphinx - generowany HTML
+docs/_build/

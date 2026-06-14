@@ -1,4 +1,4 @@
-"""Telegram bot - cienka warstwa nad services/.
+"""Telegram bot - a thin layer over services/.
 
-Handlery wolaja funkcje z services/ i formatuja wynik dla Telegrama.
+Handlers call functions from services/ and format the result for Telegram.
 """

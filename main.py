@@ -1,7 +1,7 @@
-"""CLI dla travel_agent.
+"""CLI for travel_agent.
 
-Cienka warstwa prezentacji: parsuje argumenty z terminala, wola service layer
-i formatuje wynik. Cala logika biznesowa siedzi w services/.
+A thin presentation layer: it parses terminal arguments, calls the service
+layer, and formats the result. All business logic lives in services/.
 """
 
 import argparse
@@ -12,18 +12,15 @@ from typing import Optional
 from db import DEFAULT_DB_PATH
 from services.alert_service import check_threshold
 from services.analytics_service import (
-    cheapest_weekday,
     destination_ranking,
     direction_stats,
-    price_percentile,
-    route_price_stats,
+    price_history,
 )
 from services.query_service import (
     ComparisonResult,
     OfferRow,
     RunRow,
     compare_runs,
-    get_best,
     list_offers,
     list_runs,
 )
@@ -31,6 +28,7 @@ from services.search_service import search_and_save
 
 
 def format_offer(offer: OfferRow) -> str:
+    """Format a single offer into a one-line CLI string."""
     ret = offer.return_date if offer.return_date else "-"
     return (
         f"#{offer.id} run={offer.run_id} {offer.origin}->{offer.destination} "
@@ -41,6 +39,7 @@ def format_offer(offer: OfferRow) -> str:
 
 
 def format_run(run: RunRow) -> str:
+    """Format a single search run into a one-line CLI string."""
     params = json.loads(run.params_json) if run.params_json else {}
     return (
         f"#{run.id} [{run.status}] {run.search_mode} "
@@ -49,6 +48,7 @@ def format_run(run: RunRow) -> str:
 
 
 def cmd_search(args) -> int:
+    """Handle the ``search`` command: scrape a URL and print saved offers."""
     print("start")
     result = search_and_save(args.url, max_results=args.max_results, db_path=args.db)
 
@@ -63,6 +63,7 @@ def cmd_search(args) -> int:
 
 
 def cmd_list(args) -> int:
+    """Handle the ``list`` command: print stored offers."""
     offers = list_offers(db_path=args.db, run_id=args.run_id, limit=args.limit)
     if args.run_id:
         print(f"Oferty dla run #{args.run_id}:")
@@ -76,16 +77,8 @@ def cmd_list(args) -> int:
     return 0
 
 
-def cmd_best(args) -> int:
-    offer = get_best(db_path=args.db, run_id=args.run_id)
-    if offer is None:
-        print("Brak ofert.")
-        return 0
-    print(format_offer(offer))
-    return 0
-
-
 def cmd_runs(args) -> int:
+    """Handle the ``runs`` command: print the search history."""
     runs = list_runs(db_path=args.db, limit=args.limit)
     if not runs:
         print("Brak wyszukiwan w bazie.")
@@ -96,6 +89,7 @@ def cmd_runs(args) -> int:
 
 
 def cmd_compare(args) -> int:
+    """Handle the ``compare`` command: compare the 2 latest runs for a route."""
     if not args.origin or not args.destination:
         print("compare wymaga --origin i --destination (np. --origin WAW --destination TIA)")
         return 1
@@ -127,42 +121,34 @@ def cmd_compare(args) -> int:
 
 
 def cmd_stats(args) -> int:
+    """Handle the ``stats`` command: print price history of a specific flight."""
     origin = args.origin.upper()
     destination = args.destination.upper()
 
-    stats = route_price_stats(origin, destination, db_path=args.db)
-    if stats is None:
-        print(f"Brak danych dla trasy {origin}->{destination}.")
+    if not args.date:
+        print("Podaj date wylotu: --date RRRR-MM-DD (np. --date 2026-08-15)")
+        return 1
+
+    hist = price_history(origin, destination, args.date, db_path=args.db)
+    if hist is None:
+        print(f"Brak historii dla {origin}->{destination} {args.date}.")
         return 0
 
-    print(f"Statystyki cen {origin}->{destination} ({stats.count} ofert, EUR):")
-    print(f"  min:     {stats.min_price:.2f}")
-    print(f"  mediana: {stats.median_price:.2f}")
-    print(f"  srednia: {stats.avg_price:.2f}")
-    print(f"  max:     {stats.max_price:.2f}")
-    print(f"  odchyl.: {stats.stdev_price:.2f}")
-
-    weekdays = cheapest_weekday(origin, destination, db_path=args.db)
-    if weekdays:
-        print("\nNajtanszy dzien wylotu:")
-        for w in weekdays[:3]:
-            print(f"  {w.weekday}: sr. {w.avg_price:.2f} (min {w.min_price:.2f}, {w.count} ofert)")
-
-    if args.price is not None:
-        pct = price_percentile(args.price, origin, destination, db_path=args.db)
-        if pct is not None:
-            print(
-                f"\nCena {args.price:.2f} EUR jest w {pct.percentile:.0f}. percentylu "
-                f"({pct.cheaper_than_pct:.0f}% obserwacji drozszych, n={pct.sample_size})"
-            )
-            if pct.percentile <= 25:
-                print("  -> OKAZJA (taniej niz wiekszosc historii)")
-            elif pct.percentile >= 75:
-                print("  -> DROGO (drozej niz wiekszosc historii)")
+    print(f"Cena lotu {origin}->{destination} wylot {hist.departure_date} "
+          f"(sledzony {hist.count}x):")
+    print(f"  pierwsza:  {hist.first_price:.2f} EUR")
+    print(f"  teraz:     {hist.last_price:.2f} EUR")
+    print(f"  najtaniej: {hist.min_price:.2f} EUR")
+    print(f"  najdrozej: {hist.max_price:.2f} EUR")
+    if hist.count >= 2:
+        change = hist.change
+        label = "staniał" if change < 0 else ("podrozal" if change > 0 else "bez zmian")
+        print(f"  -> {label} o {abs(change):.2f} EUR od pierwszego sprawdzenia")
     return 0
 
 
 def cmd_rank(args) -> int:
+    """Handle the ``rank`` command: print cheapest destinations from an airport."""
     origin = args.origin.upper()
     ranking = destination_ranking(origin, db_path=args.db, limit=args.limit)
     if not ranking:
@@ -175,6 +161,7 @@ def cmd_rank(args) -> int:
 
 
 def cmd_leg(args) -> int:
+    """Handle the ``leg`` command: print single-leg prices for both directions."""
     o, d = args.origin.upper(), args.destination.upper()
     there = direction_stats(o, d, db_path=args.db)
     back = direction_stats(d, o, db_path=args.db)
@@ -193,12 +180,13 @@ def cmd_leg(args) -> int:
     if there and back:
         diff = back.median_price - there.median_price
         if abs(diff) >= 0.01:
-            droz = d if diff < 0 else o
-            print(f"  Asymetria: powrot do {droz} drozszy o {abs(diff):.2f} EUR (mediana)")
+            pricier = d if diff < 0 else o
+            print(f"  Asymetria: powrot do {pricier} drozszy o {abs(diff):.2f} EUR (mediana)")
     return 0
 
 
 def cmd_alert(args) -> int:
+    """Handle the ``alert`` command: check the cheapest offer against a threshold."""
     result = check_threshold(
         threshold=args.threshold,
         expected_currency=args.currency,
@@ -231,6 +219,7 @@ def cmd_alert(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build and return the argparse parser with all subcommands."""
     parser = argparse.ArgumentParser(
         description="Travel agent: scraping AZair i historia cen w SQLite.",
     )
@@ -260,11 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
     alert_p.add_argument("--currency", default="EUR")
     alert_p.add_argument("--run-id", type=int, default=None)
 
-    stats_p = sub.add_parser("stats", help="Statystyki cen dla trasy")
+    stats_p = sub.add_parser("stats", help="Historia ceny konkretnego lotu w czasie")
     stats_p.add_argument("--origin", required=True)
     stats_p.add_argument("--destination", required=True)
-    stats_p.add_argument("--price", type=float, default=None,
-                         help="Cena do oceny percentylem (opcjonalne)")
+    stats_p.add_argument("--date", default=None,
+                         help="Data wylotu RRRR-MM-DD (wymagana)")
 
     rank_p = sub.add_parser("rank", help="Ranking najtanszych kierunkow z lotniska")
     rank_p.add_argument("--origin", required=True)
@@ -278,7 +267,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    # Skrot: 'python main.py https://...' bez subkomendy
+    """CLI entry point: dispatch to the selected subcommand handler."""
+    # Shortcut: 'python main.py https://...' without a subcommand
     if len(sys.argv) > 1 and sys.argv[1].startswith("http"):
         print("start")
         result = search_and_save(sys.argv[1].strip())
@@ -301,7 +291,6 @@ def main() -> None:
     handlers = {
         "search": cmd_search,
         "list": cmd_list,
-        "best": cmd_best,
         "runs": cmd_runs,
         "compare": cmd_compare,
         "alert": cmd_alert,

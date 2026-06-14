@@ -1,0 +1,6 @@
+# Zaleznosci do budowania dokumentacji (osobno od runtime).
+# Instalacja:  pip install -r docs/requirements.txt
+# Build:       cd docs && make html
+sphinx==7.4.7
+sphinx-rtd-theme==3.1.0
+sphinxcontrib-mermaid==1.2.3

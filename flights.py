@@ -1,3 +1,10 @@
+"""Scraping and parsing of AZair flight search results.
+
+Provides Playwright-based scraping of the AZair results page plus a set of pure
+parser helpers (regular expressions) that turn raw offer text and HTML into
+structured offer dictionaries.
+"""
+
 import re
 import urllib.parse
 from dataclasses import dataclass
@@ -26,7 +33,7 @@ DISPLAY_DATE_PATTERN = (
 AIRLINE_TRACKBOOK_PATTERN = r"trackBook\s*\(\s*'([A-Z0-9]{2,3})'"
 CODE_SPAN_PATTERN = r'<span class="code">([A-Z]{3})'
 
-# Mapowanie kod IATA -> nazwa linii (rozszerzaj wedle potrzeb)
+# Map of IATA code -> airline name (extend as needed)
 IATA_TO_AIRLINE_NAME = {
     "FR": "Ryanair",
     "W6": "Wizz Air",
@@ -70,6 +77,13 @@ SUBPRICE_PATTERN = r'<span class="subPrice">([^<]+)</span>'
 
 @dataclass
 class ScrapeResult:
+    """Outcome of scraping an AZair results page.
+
+    Attributes:
+        offers: List of parsed offer dictionaries.
+        error: Short error code if scraping failed, otherwise None.
+        message: Human-readable message describing the result or error.
+    """
     offers: list
     error: Optional[str] = None
     message: str = ""
@@ -77,7 +91,16 @@ class ScrapeResult:
 
 
 def parse_date(s):
-    # zmiana formatu daty
+    """Normalize a date string to ISO format ``YYYY-MM-DD``.
+
+    Args:
+        s: Date string, either already ISO (``YYYY-MM-DD``) or dotted
+            (``DD.MM.YYYY``).
+
+    Returns:
+        The date as ``YYYY-MM-DD``, or an empty string if it cannot be parsed.
+    """
+    # change of date format
     s = s.strip()
     if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
         return s
@@ -94,6 +117,14 @@ def parse_date(s):
 
 
 def parse_display_date(text):
+    """Extract the first display date from text and return it as ISO.
+
+    Args:
+        text: Text that may contain a display date like ``Mon 24/05/26``.
+
+    Returns:
+        The date as ``YYYY-MM-DD``, or an empty string if none is found.
+    """
     match = re.search(DISPLAY_DATE_PATTERN, text)
     if not match:
         return ""
@@ -102,6 +133,14 @@ def parse_display_date(text):
 
 
 def parse_display_dates(text):
+    """Extract all display dates from text and return them as ISO strings.
+
+    Args:
+        text: Text that may contain one or more display dates.
+
+    Returns:
+        A list of dates as ``YYYY-MM-DD`` in order of appearance.
+    """
     dates = []
     for day, month, year in re.findall(DISPLAY_DATE_PATTERN, text):
         dates.append(f"20{year}-{month}-{day}")
@@ -109,6 +148,14 @@ def parse_display_dates(text):
 
 
 def price_amount(price_text):
+    """Parse a numeric amount from a price string, ignoring currency tokens.
+
+    Args:
+        price_text: Raw price text such as ``"123,45 EUR"`` or ``"1.234,56"``.
+
+    Returns:
+        The amount as a float, or ``0.0`` if it cannot be parsed.
+    """
     cleaned = price_text.upper()
     for token in ("EUR", "PLN", "CZK", "€", "ZŁ", "ZL"):
         cleaned = cleaned.replace(token, "")
@@ -124,7 +171,15 @@ def price_amount(price_text):
 
 
 def parse_price_text(price_text):
-    """Zwraca (kwota: float, waluta: str). Waluta = 'UNKNOWN' jesli nie rozpoznano."""
+    """Return ``(amount: float, currency: str)`` from a price string.
+
+    Args:
+        price_text: Raw price text including a currency symbol or code.
+
+    Returns:
+        A tuple of the amount and the detected currency code. The currency is
+        ``'UNKNOWN'`` when it cannot be recognized.
+    """
     text = price_text.strip().replace("\xa0", " ").upper()
 
     currency = "UNKNOWN"
@@ -143,10 +198,19 @@ def parse_price_text(price_text):
 
 
 def find_all_prices(text):
+    """Return all price-like substrings found in the given text."""
     return [m.group(0).strip() for m in re.finditer(PRICE_PATTERN, text, re.IGNORECASE)]
 
 
 def pick_total_price(text):
+    """Return the highest price found in the text, assumed to be the total.
+
+    Args:
+        text: Text that may contain one or more prices.
+
+    Returns:
+        The highest price string, or None if no price is found.
+    """
     prices = find_all_prices(text)
     if not prices:
         return None
@@ -154,12 +218,21 @@ def pick_total_price(text):
 
 
 def parse_flight_url(url):
+    """Parse an AZair search URL into structured route context.
+
+    Args:
+        url: A full AZair search/results URL.
+
+    Returns:
+        A dict with keys ``origin``, ``destination``, ``departure_date``,
+        ``return_date`` and ``is_oneway`` derived from the query string.
+    """
     url_parsed = urllib.parse.urlparse(url.strip())
     qs = urllib.parse.parse_qs(url_parsed.query)
 
     is_oneway = (get_first(qs, "isOneway") or "").lower() == "oneway"
 
-    # 
+    #
     origin = None
     if get_first(qs, "srcap0"): origin = get_first(qs, "srcap0")
     elif get_first(qs, "srcap1"): origin = get_first(qs, "srcap1")
@@ -218,7 +291,7 @@ def parse_flight_url(url):
     if dep_raw:
         departure_date = parse_date(dep_raw)
 
-    # W one-way `arrdate` to granica okna wyszukiwania, NIE data powrotu.
+    # In one-way searches, `arrdate` is the search window boundary, NOT a return date.
     return_date = None
     if not is_oneway and arr_raw:
         return_date = parse_date(arr_raw)
@@ -234,7 +307,7 @@ def parse_flight_url(url):
 
 
 def extract_airlines(html):
-    "Zwraca liste (kod_iata, nazwa) dla kazdego segmentu w kolejnosci wystapienia."
+    "Return a list of (iata_code, name) for each segment in order of appearance."
     if not html:
         return []
     pairs = []
@@ -250,7 +323,7 @@ def extract_airlines(html):
 
 
 def extract_flight_numbers(html):
-    "Numery lotow w kolejnosci segmentow (z linkow flightradar24 lub linkowanego tekstu)."
+    "Flight numbers in segment order (from flightradar24 links or linked text)."
     if not html:
         return []
     numbers = []
@@ -263,6 +336,7 @@ def extract_flight_numbers(html):
 
 
 def extract_total_price(html):
+    """Return the total price from the offer HTML, or None if not present."""
     if not html:
         return None
     match = re.search(TOTAL_PRICE_PATTERN, html, re.DOTALL)
@@ -272,10 +346,17 @@ def extract_total_price(html):
 
 
 def extract_subprices(html):
-    """Zwraca liste cen czastkowych (subPrice) w kolejnosci nog.
+    """Return the list of per-leg sub-prices (subPrice) in leg order.
 
-    Round-trip: [cena_tam, cena_powrot]. One-way: [cena_lotu].
-    U low-costow suma subPrice = totalPrice, wiec subPrice = cena one-way danej nogi.
+    Round-trip: ``[outbound_price, return_price]``. One-way: ``[flight_price]``.
+    For low-cost carriers the sum of subPrices equals the totalPrice, so each
+    subPrice is the one-way price of that leg.
+
+    Args:
+        html: The offer HTML.
+
+    Returns:
+        A list of price strings in leg order (may be empty).
     """
     if not html:
         return []
@@ -283,6 +364,16 @@ def extract_subprices(html):
 
 
 def extract_offer(text, html=""):
+    """Parse a single offer from its text and HTML into a dictionary.
+
+    Args:
+        text: The inner text of the offer element.
+        html: The inner HTML of the offer element (optional but recommended,
+            since airline, flight number and sub-prices come from the markup).
+
+    Returns:
+        A dict describing the offer, or None when no valid price is found.
+    """
     if text == "" or text == None:
         return None
 
@@ -325,12 +416,12 @@ def extract_offer(text, html=""):
     if len(time_matches) >= 2:
         arrival_time = time_matches[1]
 
-    # Linia lotnicza i numer lotu - osobno dla outbound i return
+    # Airline and flight number - separately for outbound and return
     airlines = extract_airlines(html or "")
     flight_numbers = extract_flight_numbers(html or "")
 
     if not airlines:
-        # Ostateczny fallback: regex na samym tekscie
+        # Final fallback: regex on the text itself
         flight_match = re.search(FLIGHT_NO_PATTERN, text, re.IGNORECASE)
         if flight_match:
             flight_numbers = [flight_match.group(1).upper()]
@@ -343,7 +434,7 @@ def extract_offer(text, html=""):
     outbound_flight_no = flight_numbers[0] if len(flight_numbers) >= 1 else "UNKNOWN"
     return_flight_no = flight_numbers[1] if len(flight_numbers) >= 2 else "UNKNOWN"
 
-    # Ceny czastkowe nog (subPrice). U low-costow subPrice = cena one-way danej nogi.
+    # Per-leg sub-prices (subPrice). For low-cost carriers subPrice = one-way price of the leg.
     subprices = extract_subprices(html or "")
     outbound_price_text = subprices[0] if len(subprices) >= 1 else None
     return_price_text = subprices[1] if len(subprices) >= 2 else None
@@ -360,15 +451,15 @@ def extract_offer(text, html=""):
         "departure_time": departure_time,
         "arrival_time": arrival_time,
         "price_text": price_text,
-        # Backward-compat: pierwsza linia/numer trafiaja do "airline"/"flight_number"
+        # Backward-compat: the first airline/number go into "airline"/"flight_number"
         "airline": outbound_airline_name,
         "airline_code": outbound_airline_code,
         "flight_number": outbound_flight_no,
-        # Nowe pola: powrot
+        # New fields: return leg
         "return_airline": return_airline_name,
         "return_airline_code": return_airline_code,
         "return_flight_number": return_flight_no,
-        # Ceny czastkowe nog
+        # Per-leg sub-prices
         "outbound_price_text": outbound_price_text,
         "return_price_text": return_price_text,
     }
@@ -376,6 +467,16 @@ def extract_offer(text, html=""):
 
 
 def merge_offer(offer, ctx):
+    """Fill missing offer fields from the URL-derived route context.
+
+    Args:
+        offer: The offer dict produced by ``extract_offer``.
+        ctx: Route context produced by ``parse_flight_url``.
+
+    Returns:
+        The same offer dict, with origin/destination/dates completed and the
+        helper time fields removed.
+    """
     if offer["origin"] == "UNK" or offer["origin"] == "":
         if "origin" in ctx and ctx["origin"] != "":
             offer["origin"] = ctx["origin"]
@@ -399,7 +500,7 @@ def merge_offer(offer, ctx):
         if "T" not in offer["departure_date"]:
             offer["departure_date"] = offer["departure_date"] + "T" + dep_time
 
-    # One-way: brak daty powrotu, nawet jesli ctx ma cos tam (to wtedy granica okna szukania).
+    # One-way: no return date, even if ctx has one (then it is the search window boundary).
     is_oneway = ctx.get("is_oneway", False)
     if is_oneway:
         offer["return_date"] = None
@@ -409,7 +510,7 @@ def merge_offer(offer, ctx):
             if ctx["return_date"] is not None:
                 offer["return_date"] = ctx["return_date"]
 
-    # Klasyczne usuwanie ze slownika z instrukcja del (jak w C++)
+    # Remove helper fields (times) - they are not stored in the database.
     if "departure_time" in offer:
         del offer["departure_time"]
     if "arrival_time" in offer:
@@ -419,6 +520,7 @@ def merge_offer(offer, ctx):
 
 
 def offer_dedup_key(offer):
+    """Return a tuple used to deduplicate offers (route, dates and price)."""
     return (
         offer["origin"],
         offer["destination"],
@@ -429,10 +531,24 @@ def offer_dedup_key(offer):
 
 
 def sort_offers_by_price(offers):
+    """Return the offers sorted by ascending price."""
     return sorted(offers, key=lambda o: price_amount(o["price_text"]))
 
 
 def scrape_flight_from_results_url_full(results_url, max_results=20):
+    """Scrape offers from an AZair results URL using a headless browser.
+
+    Loads the page, waits for the AJAX-loaded results to stabilize, then parses
+    each result element into an offer, deduplicating and sorting by price.
+
+    Args:
+        results_url: A full AZair results URL.
+        max_results: Maximum number of offers to return (cheapest first).
+
+    Returns:
+        A ScrapeResult containing the offers, or an error code and message when
+        the page has no results or scraping fails.
+    """
     results_url = results_url.strip()
     url_ctx = parse_flight_url(results_url)
 
@@ -446,16 +562,17 @@ def scrape_flight_from_results_url_full(results_url, max_results=20):
             except Exception:
                 page.wait_for_timeout(4000)
 
-            # AZair dociaga oferty AJAX-em po pojawieniu sie pierwszej.
-            # Czekamy az liczba div.result przestanie rosnac (stabilizacja),
-            # inaczej zlapiemy tylko czesc ofert (czesto te drozsze/wolniej ladowane).
+            # AZair loads offers via AJAX after the first one appears.
+            # Wait until the div.result count stops growing (stabilizes),
+            # otherwise we catch only part of the offers (often the pricier /
+            # slower-loading ones).
             prev_count = -1
             stable_reads = 0
             for _ in range(20):  # max ~20s
                 count = page.locator("div.result").count()
                 if count == prev_count and count > 0:
                     stable_reads += 1
-                    if stable_reads >= 3:  # 3 odczyty bez zmian = zaladowane
+                    if stable_reads >= 3:  # 3 reads without change = loaded
                         break
                 else:
                     stable_reads = 0
@@ -515,6 +632,7 @@ def scrape_flight_from_results_url_full(results_url, max_results=20):
     
 
 def get_first(qs, key):
+    """Return the first stripped value for a query-string key, or None."""
     if key in qs:
         vals = qs[key]
         if len(vals) > 0:

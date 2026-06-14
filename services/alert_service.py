@@ -1,4 +1,4 @@
-"""Logika sprawdzania progu cenowego dla najtanszych ofert."""
+"""Logic for checking a price threshold against the cheapest offers."""
 
 from dataclasses import dataclass
 from typing import Optional
@@ -10,7 +10,7 @@ from services.query_service import OfferRow, get_best
 
 @dataclass
 class AlertResult:
-    """Wynik sprawdzenia progu cenowego."""
+    """Result of a price threshold check."""
     triggered: bool
     reason: str  # 'below_threshold' | 'above_threshold' | 'no_offers' | 'currency_mismatch'
     offer: Optional[OfferRow] = None
@@ -24,16 +24,16 @@ def check_threshold(
     db_path: str = DEFAULT_DB_PATH,
     run_id: Optional[int] = None,
 ) -> AlertResult:
-    """Sprawdza czy najtansza oferta jest ponizej zadanego progu.
+    """Check whether the cheapest offer is below the given threshold.
 
     Args:
-        threshold: maks. cena ktora chcemy plac.
-        expected_currency: 'EUR'/'PLN'/'CZK'/.../'ANY' (ANY pomija sprawdzanie waluty).
-        db_path: sciezka do bazy.
-        run_id: opcjonalnie ograniczenie do konkretnego runu.
+        threshold: max price we are willing to pay.
+        expected_currency: 'EUR'/'PLN'/'CZK'/.../'ANY' (ANY skips the currency check).
+        db_path: path to the database.
+        run_id: optionally restrict to a specific run.
 
     Returns:
-        AlertResult z informacja czy alert zostal aktywowany i dlaczego.
+        AlertResult with whether the alert was triggered and why.
     """
     offer = get_best(db_path=db_path, run_id=run_id)
 

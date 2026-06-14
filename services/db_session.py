@@ -1,7 +1,7 @@
-"""Wspolny helper do otwierania polaczenia z baza danych.
+"""Shared helper for opening a database connection.
 
-Wczesniej `open_db` siedzialo w main.py - ale to jest infrastruktura
-ktorej potrzebuje kazdy serwis, wiec mieszka tutaj.
+Previously ``open_db`` lived in main.py - but it is infrastructure that every
+service needs, so it lives here.
 """
 
 import sqlite3
@@ -16,7 +16,7 @@ from db import (
 
 
 def open_db(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """Otwiera polaczenie i upewnia sie ze schemat istnieje (idempotentnie)."""
+    """Open a connection and ensure the schema exists (idempotently)."""
     conn = sqlite3.connect(db_path)
     create_search_runs_table(conn)
     create_flight_offers_table(conn)

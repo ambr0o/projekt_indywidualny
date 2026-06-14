@@ -1,6 +1,6 @@
-"""Logika zapytan o oferty i wyszukiwania w bazie.
+"""Logic for querying offers and searches in the database.
 
-Zwraca proste obiekty (dataclassy) ktore kazdy interfejs sam formatuje.
+Returns simple objects (dataclasses) that each interface formats on its own.
 """
 
 from dataclasses import dataclass
@@ -19,7 +19,7 @@ from services.db_session import open_db
 
 @dataclass
 class OfferRow:
-    """Reprezentuje jedna oferte lotu z bazy danych."""
+    """Represents a single flight offer from the database."""
     id: int
     run_id: int
     origin: str
@@ -34,7 +34,7 @@ class OfferRow:
 
     @classmethod
     def from_db_row(cls, row: tuple) -> "OfferRow":
-        """Konstruuje z krotki zwroconej przez fetch_flight_offers (11 kolumn)."""
+        """Construct from a tuple returned by fetch_flight_offers (11 columns)."""
         return cls(
             id=row[0],
             run_id=row[1],
@@ -52,7 +52,7 @@ class OfferRow:
 
 @dataclass
 class RunRow:
-    """Reprezentuje jeden search_run z bazy."""
+    """Represents a single search_run from the database."""
     id: int
     search_mode: str
     params_json: str
@@ -61,12 +61,13 @@ class RunRow:
 
     @classmethod
     def from_db_row(cls, row: tuple) -> "RunRow":
+        """Construct a RunRow from a database row tuple."""
         return cls(*row)
 
 
 @dataclass
 class ComparisonResult:
-    """Wynik porownania dwoch ostatnich udanych runow."""
+    """Result of comparing the two latest successful runs."""
     newer_run_id: int
     older_run_id: int
     newer_price: float
@@ -82,7 +83,7 @@ def list_offers(
     run_id: Optional[int] = None,
     limit: int = 20,
 ) -> List[OfferRow]:
-    """Zwraca oferty - z konkretnego runu albo ostatnie ogolnie."""
+    """Return offers - from a specific run or the latest overall."""
     conn = open_db(db_path)
     try:
         rows = fetch_flight_offers(conn, search_run_id=run_id, limit=limit)
@@ -95,7 +96,7 @@ def get_best(
     db_path: str = DEFAULT_DB_PATH,
     run_id: Optional[int] = None,
 ) -> Optional[OfferRow]:
-    """Zwraca najtansza oferte - z runu lub globalnie."""
+    """Return the cheapest offer - from a run or globally."""
     conn = open_db(db_path)
     try:
         row = get_best_offer(conn, search_run_id=run_id)
@@ -107,7 +108,7 @@ def get_best(
 
 
 def list_runs(db_path: str = DEFAULT_DB_PATH, limit: int = 10) -> List[RunRow]:
-    """Zwraca historie wyszukiwan."""
+    """Return the search history."""
     conn = open_db(db_path)
     try:
         rows = fetch_search_runs(conn, limit=limit)
@@ -121,7 +122,7 @@ def compare_runs(
     origin: Optional[str] = None,
     destination: Optional[str] = None,
 ) -> Optional[ComparisonResult]:
-    """Porownuje 2 ostatnie udane runy (opcjonalnie z filtrem origin/destination)."""
+    """Compare the 2 latest successful runs (optionally filtered by origin/destination)."""
     conn = open_db(db_path)
     try:
         result = compare_latest_runs(conn, origin=origin, destination=destination)

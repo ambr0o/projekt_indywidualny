@@ -1,14 +1,16 @@
-"""Logika scrapowania i zapisu ofert lotow w bazie.
+"""Scraping and persistence of flight offers.
 
-Funkcja `search_and_save` jest czysta:
-- nie printuje
-- nie konczy procesu
-- zwraca obiekt SearchResult opisujacy co sie udalo
+The ``search_and_save`` function is pure:
+- it does not print
+- it does not exit the process
+- it returns a SearchResult object describing what happened
 
-Przez to mozna ja wywolac z CLI, bota Telegrama, REST API, crona - skadkolwiek.
+Because of that it can be called from the CLI, the Telegram bot, a REST API,
+the cron - from anywhere.
 """
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Optional
 
 from db import (
@@ -28,7 +30,7 @@ from services.db_session import open_db
 
 @dataclass
 class SearchResult:
-    """Wynik wyszukiwania zwracany przez search_and_save."""
+    """Result of a search returned by ``search_and_save``."""
     run_id: int
     offers_count: int
     success: bool
@@ -36,10 +38,10 @@ class SearchResult:
 
 
 def _normalize_offer(raw_offer: dict) -> dict:
-    """Konwertuje surowa oferte ze scrapera na format gotowy do zapisu w DB."""
+    """Convert a raw scraped offer into a DB-ready dictionary."""
     price_val, currency_val = parse_price_text(raw_offer["price_text"])
 
-    # Ceny czastkowe nog - moga byc None (np. gdy AZair nie podal subPrice)
+    # Per-leg sub-prices - may be None (e.g. when AZair did not provide subPrice)
     out_text = raw_offer.get("outbound_price_text")
     ret_text = raw_offer.get("return_price_text")
     outbound_price = parse_price_text(out_text)[0] if out_text else None
@@ -68,15 +70,15 @@ def search_and_save(
     db_path: str = DEFAULT_DB_PATH,
     max_results: int = 20,
 ) -> SearchResult:
-    """Pobiera wyniki ze AZair, normalizuje i zapisuje w bazie.
+    """Scrape results from AZair, normalize them and save them in the database.
 
     Args:
-        flight_url: pelny link do strony wynikow AZair.
-        db_path: sciezka do pliku SQLite.
-        max_results: maks. liczba ofert do zapisania (od najtanszej).
+        flight_url: full link to the AZair results page.
+        db_path: path to the SQLite file.
+        max_results: max number of offers to save (cheapest first).
 
     Returns:
-        SearchResult z pelna informacja co sie udalo.
+        SearchResult with full information about what happened.
     """
     conn = open_db(db_path)
     ctx = parse_flight_url(flight_url)
@@ -104,8 +106,14 @@ def search_and_save(
                 error_message=scrape_result.message,
             )
 
+        saved = 0
         for raw_offer in scrape_result.offers:
             offer = _normalize_offer(raw_offer)
+            # Skip offers with an invalid price (parser returned 0.0 / inf on error).
+            # Without this a 0.0 offer ends up in the DB as the "cheapest" and triggers a false alert.
+            price = offer["price"]
+            if price is None or price <= 0 or not isfinite(price):
+                continue
             insert_flight_offer(
                 conn,
                 run_id=run_id,
@@ -124,11 +132,12 @@ def search_and_save(
                 outbound_price=offer["outbound_price"],
                 return_price=offer["return_price"],
             )
+            saved += 1
 
         finish_search_run(conn, run_id=run_id, status="done")
         return SearchResult(
             run_id=run_id,
-            offers_count=len(scrape_result.offers),
+            offers_count=saved,
             success=True,
         )
 

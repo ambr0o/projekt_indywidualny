@@ -1,6 +1,6 @@
-"""Pogoda klimatyczna dla destynacji .
+"""Climate weather for destinations.
 
-Wspolrzedne lotnisk z data/airports.json. Cache w SQLite (iata, month).
+Airport coordinates come from data/airports.json. Cached in SQLite (iata, month).
 """
 
 import json
@@ -20,7 +20,7 @@ ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 
 def _load_coords() -> dict:
-    """Mapa kod IATA -> (lat, lon) z airports.json."""
+    """Map IATA code -> (lat, lon) from airports.json."""
     try:
         raw = json.loads(_AIRPORTS_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -39,28 +39,34 @@ AIRPORT_COORDS = _load_coords()
 
 @dataclass
 class WeatherInfo:
-    """Typowa pogoda klimatyczna dla lotniska w danym miesiacu."""
+    """Typical climate weather for an airport in a given month."""
     iata: str
     month: int
-    temp_max: float       # srednia dzienna maks.
-    temp_min: float       # srednia dzienna min.
-    rain_mm: float        # suma opadow w miesiacu
-    rainy_days: int       # liczba dni z opadem > 1mm
-    kind: str             # "climate" (srednia historyczna)
+    temp_max: float       # average daily max
+    temp_min: float       # average daily min
+    rain_mm: float        # total precipitation in the month
+    rainy_days: int       # number of days with precipitation > 1mm
+    kind: str             # "climate" (historical average)
 
     def summary(self) -> str:
-        emoji = "☀️" if self.rainy_days <= 6 else ("🌦️" if self.rainy_days <= 12 else "🌧️")
+        """Return a short human-readable weather summary string."""
+        if self.rainy_days <= 6:
+            sky = "slonecznie"
+        elif self.rainy_days <= 12:
+            sky = "zmiennie"
+        else:
+            sky = "deszczowo"
         return (
-            f"{emoji} ~{self.temp_max:.0f}°C / {self.temp_min:.0f}°C, "
+            f"{sky}, ~{self.temp_max:.0f}°C / {self.temp_min:.0f}°C, "
             f"{self.rainy_days} dni z deszczem (typowo dla mies. {self.month:02d})"
         )
 
 
 def _prev_year_month_range(month: int) -> tuple[str, str]:
-    """Zwraca (start, end) jako YYYY-MM-DD dla danego miesiaca w poprzednim roku."""
+    """Return (start, end) as YYYY-MM-DD for the given month in the previous year."""
     year = date.today().year - 1
     start = date(year, month, 1)
-    # ostatni dzien miesiaca
+    # last day of the month
     if month == 12:
         end = date(year, 12, 31)
     else:
@@ -70,7 +76,21 @@ def _prev_year_month_range(month: int) -> tuple[str, str]:
 
 
 def weather_for(iata: str, month: int, db_path: str = DEFAULT_DB_PATH) -> Optional[WeatherInfo]:
+    """Typical climate weather for an airport in a given month.
 
+    Flights are usually beyond the forecast range (16 days), so we use historical
+    data from the previous year for the same month. The result is cached in
+    SQLite to avoid querying Open-Meteo repeatedly.
+
+    Args:
+        iata (str): IATA airport code (must be in data/airports.json).
+        month (int): Month 1-12.
+        db_path (str): Path to the SQLite database (cache).
+
+    Returns:
+        Optional[WeatherInfo]: Typical weather (temperatures, precipitation), or
+        None when the airport is unknown, the month is invalid, or the API fails.
+    """
     iata = iata.upper()
     if iata not in AIRPORT_COORDS:
         return None

@@ -1,22 +1,21 @@
-"""Bot Telegrama dla travel_agent.
+"""Telegram bot for travel_agent.
 
-Komendy:
-    /start              - powitanie
-    /help               - lista komend
-    /best               - najtansza oferta z bazy
-    /list [limit]       - ostatnie zapisane oferty (domyslnie 10)
-    /runs [limit]       - historia wyszukiwan
-    /compare [origin] [destination]   - porownaj 2 ostatnie udane runy
-    /alert <prog> [waluta]            - sprawdz prog cenowy (domyslnie EUR)
-    /search <url>       - uruchom scraping URL-a AZair (sync, moze potrwac 30-60s)
+Commands::
 
-Konfiguracja przez .env:
-    TELEGRAM_BOT_TOKEN          - token od @BotFather (wymagane)
-    TELEGRAM_ALLOWED_CHAT_IDS   - lista chat_id (oddzielone przecinkami) ktore maja dostep
-                                  Puste = wszyscy.
-    TRAVEL_AGENT_DB             - sciezka do bazy SQLite (opcjonalne, default: database.db)
+    /start              - greeting
+    /help               - list of commands
+    /compare [origin] [destination]   - compare the 2 latest successful runs
+    /alert <threshold> [currency]     - check a price threshold (EUR by default)
 
-Uruchomienie:
+Configuration via .env::
+
+    TELEGRAM_BOT_TOKEN          - token from @BotFather (required)
+    TELEGRAM_ALLOWED_CHAT_IDS   - list of chat_ids (comma-separated) with access
+                                  Empty = everyone.
+    TRAVEL_AGENT_DB             - path to the SQLite database (optional, default: database.db)
+
+Run::
+
     python -m bot.telegram_bot
 """
 
@@ -32,28 +31,27 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from bot.formatters import (
     format_alert,
-    format_best,
     format_comparison,
     format_direction,
     format_offers_list,
+    format_price_history,
     format_ranking,
-    format_runs_list,
-    format_stats,
 )
 from services.alert_service import check_threshold
 from services.analytics_service import (
-    cheapest_weekday,
     destination_ranking,
     direction_stats,
-    price_percentile,
-    route_price_stats,
+    price_history,
 )
 from services.find_service import build_find_request
-from services.query_service import compare_runs, get_best, list_offers, list_runs
+from services.llm_service import LLMUnavailable, parse_query
+from services.query_service import compare_runs, list_offers
 from services.search_service import search_and_save
 from services.watch_service import add_watch, list_watches, remove_watch
 from services.weather_service import weather_for
@@ -69,6 +67,7 @@ log = logging.getLogger("travel_agent.bot")
 
 
 def _allowed_chat_ids() -> set[int]:
+    """Return the set of allowed chat_ids from .env (empty = no whitelist)."""
     raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
     if not raw:
         return set()
@@ -76,31 +75,34 @@ def _allowed_chat_ids() -> set[int]:
 
 
 def _db_path() -> str:
+    """Return the SQLite database path from .env (default: database.db)."""
     return os.getenv("TRAVEL_AGENT_DB", "database.db")
 
 
 def authorized_only(handler):
-    """Dekorator: jesli ustawiono whiteliste, odrzuc obce chat_id."""
+    """Decorator: if a whitelist is set, reject foreign chat_ids."""
     @wraps(handler)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check the whitelist before invoking the wrapped handler."""
         whitelist = _allowed_chat_ids()
         chat_id = update.effective_chat.id
         if whitelist and chat_id not in whitelist:
             log.warning("Odrzucony chat_id %s (nie na whiteliscie)", chat_id)
             await update.message.reply_text(
-                "🚫 Brak dostepu. Skontaktuj sie z wlascicielem bota."
+                "Brak dostepu. Skontaktuj sie z wlascicielem bota."
             )
             return
         return await handler(update, context)
     return wrapper
 
 
-# --- HANDLERY KOMEND ---
+# --- COMMAND HANDLERS ---
 
 @authorized_only
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /start: greet the user and show their chat_id."""
     text = (
-        "👋 Witaj w travel_agent!\n\n"
+        "Witaj w travel_agent!\n\n"
         f"Twoj chat_id: {update.effective_chat.id}\n\n"
         "Komendy: /help"
     )
@@ -109,13 +111,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @authorized_only
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /help: display the list of available commands."""
     text = (
-        "📖 Komendy:\n\n"
-        "/best - najtansza oferta z bazy\n"
-        "/list [limit] - ostatnie oferty\n"
-        "/runs [limit] - historia wyszukiwan\n"
+        "Komendy:\n\n"
+        "Mozesz tez pisac normalnie, np:\n"
+        "   „lot z Krakowa do Barcelony w sierpniu”\n"
+        "   „powiadom gdy WAW Tirana ponizej 50 euro”\n\n"
         "/compare <skad> <dokad> - porownaj cene przelotu (2 ost. wyszukiwania)\n"
-        "/stats <origin> <dest> [cena] - statystyki cen trasy\n"
+        "/stats <skad> <dokad> <data> - jak zmieniala sie cena tego lotu w czasie\n"
         "/rank <origin> - najtansze kierunki z lotniska\n"
         "/leg <origin> <dest> - cena pojedynczego przelotu (obie strony)\n"
         "/weather <iata> <miesiac> - typowa pogoda (np. /weather TIA 8)\n"
@@ -123,46 +126,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/mywatches - twoje obserwacje\n"
         "/unwatch <numer> - usun obserwacje\n"
         "/alert <prog> [waluta] - sprawdz prog cenowy\n"
-        "/find <skad> <dokad> <od> <do> [oneway] - wyszukaj loty\n"
-        "/search <url> - scrapuj URL AZair (30-60s)\n"
+        "/find <skad> <dokad> <od> <do> [oneway] [dni N-M] - wyszukaj loty\n"
     )
     await update.message.reply_text(text)
 
 
 @authorized_only
-async def cmd_best(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    offer = get_best(db_path=_db_path())
-    await update.message.reply_text(format_best(offer))
-
-
-@authorized_only
-async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    limit = 10
-    if context.args:
-        try:
-            limit = max(1, min(50, int(context.args[0])))
-        except ValueError:
-            await update.message.reply_text("Limit musi byc liczba.")
-            return
-    offers = list_offers(db_path=_db_path(), limit=limit)
-    await update.message.reply_text(format_offers_list(offers, max_items=limit))
-
-
-@authorized_only
-async def cmd_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    limit = 10
-    if context.args:
-        try:
-            limit = max(1, min(50, int(context.args[0])))
-        except ValueError:
-            await update.message.reply_text("Limit musi byc liczba.")
-            return
-    runs = list_runs(db_path=_db_path(), limit=limit)
-    await update.message.reply_text(format_runs_list(runs, max_items=limit))
-
-
-@authorized_only
 async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /compare: compare flight price from the 2 latest searches."""
     if len(context.args) < 2:
         await update.message.reply_text(
             "Uzycie: /compare <skad> <dokad>\n"
@@ -178,29 +149,24 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @authorized_only
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if len(context.args) < 2:
-        await update.message.reply_text("Uzycie: /stats <origin> <destination> [cena]\nNp: /stats WMI MXP 30")
+    """Handler /stats: show how the price of a given flight changed over time."""
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Uzycie: /stats <skad> <dokad> <data-wylotu>\n"
+            "Pokazuje jak zmieniala sie cena TEGO lotu w czasie.\n"
+            "Np: /stats KRK BCN 2026-08-15"
+        )
         return
     origin = context.args[0].upper()
     destination = context.args[1].upper()
-
-    price = None
-    if len(context.args) >= 3:
-        try:
-            price = float(context.args[2].replace(",", "."))
-        except ValueError:
-            await update.message.reply_text("Cena musi byc liczba.")
-            return
-
-    db = _db_path()
-    stats = route_price_stats(origin, destination, db_path=db)
-    weekdays = cheapest_weekday(origin, destination, db_path=db)
-    percentile = price_percentile(price, origin, destination, db_path=db) if price is not None else None
-    await update.message.reply_text(format_stats(stats, weekdays, percentile))
+    dep_date = context.args[2]
+    hist = price_history(origin, destination, dep_date, db_path=_db_path())
+    await update.message.reply_text(format_price_history(hist))
 
 
 @authorized_only
 async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /rank: display the cheapest destinations from a given airport."""
     if not context.args:
         await update.message.reply_text("Uzycie: /rank <origin>\nNp: /rank KRK")
         return
@@ -211,6 +177,7 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @authorized_only
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /weather: typical climate weather for an airport in a given month."""
     if len(context.args) < 2:
         await update.message.reply_text(
             "Uzycie: /weather <iata> <miesiac>\n"
@@ -234,11 +201,12 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"Brak danych pogodowych dla {iata} (nieznane lotnisko lub blad API)."
         )
         return
-    await update.message.reply_text(f"🌍 {iata}, miesiac {month:02d}\n{w.summary()}")
+    await update.message.reply_text(f"{iata}, miesiac {month:02d}\n{w.summary()}")
 
 
 @authorized_only
 async def cmd_leg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /leg: single-leg flight price for both directions."""
     if len(context.args) < 2:
         await update.message.reply_text(
             "Uzycie: /leg <origin> <destination>\n"
@@ -256,6 +224,7 @@ async def cmd_leg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @authorized_only
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /watch: set up a price watch for a route with threshold and options."""
     if len(context.args) < 3:
         await update.message.reply_text(
             "Uzycie: /watch <skad> <dokad> <prog> [data-od data-do] [oneway] [always]\n\n"
@@ -276,7 +245,7 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Prog musi byc liczba (np. 60 lub 59.99).")
         return
 
-    # Parsuj pozostale argumenty po typie - kolejnosc dowolna
+    # Parse the remaining arguments by type - order does not matter
     rest = context.args[3:]
     oneway = False
     mode = "alert"
@@ -291,7 +260,7 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             mode = "alert"
         elif len(arg) == 10 and arg.count("-") == 2:
             dates.append(arg)
-        # nieznane argumenty ignorujemy
+        # unknown arguments are ignored
 
     dep_date = dates[0] if len(dates) >= 1 else None
     arr_date = dates[1] if len(dates) >= 2 else None
@@ -307,36 +276,37 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         db_path=_db_path(),
     )
     if result.error:
-        await update.message.reply_text(f"❌ {result.error}")
+        await update.message.reply_text(f"{result.error}")
         return
 
-    typ = "one-way" if oneway else "round-trip"
-    okno = f"{dep_date}–{arr_date}" if dep_date else "najblizsze ~2 mies."
-    tryb = "zawsze podaje cene" if mode == "always" else f"gdy <= {threshold:.0f} EUR"
+    trip_type = "one-way" if oneway else "round-trip"
+    window = f"{dep_date} - {arr_date}" if dep_date else "najblizsze ~2 mies."
+    mode_label = "zawsze podaje cene" if mode == "always" else f"gdy <= {threshold:.0f} EUR"
     await update.message.reply_text(
-        f"✅ Obserwacja #{result.watch_id}: {origin}→{destination} ({typ})\n"
-        f"📅 {okno}\n"
-        f"🔔 {tryb}"
+        f"Obserwacja #{result.watch_id}: {origin} -> {destination} ({trip_type})\n"
+        f"Termin: {window}\n"
+        f"Alert: {mode_label}"
     )
 
 
 @authorized_only
 async def cmd_mywatches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /mywatches: list the user's active watches."""
     watches = list_watches(chat_id=update.effective_chat.id, db_path=_db_path())
     if not watches:
         await update.message.reply_text(
             "Nie masz aktywnych obserwacji. Dodaj: /watch WAW TIA 60"
         )
         return
-    lines = ["👁 Twoje obserwacje:", ""]
+    lines = ["Twoje obserwacje:", ""]
     for w in watches:
-        typ = "OW" if w.oneway else "RT"
-        okno = f"{w.dep_date}–{w.arr_date}" if w.dep_date else "~2 mies."
-        tryb = "always" if w.mode == "always" else "alert"
+        trip_type = "OW" if w.oneway else "RT"
+        window = f"{w.dep_date} - {w.arr_date}" if w.dep_date else "~2 mies."
+        mode_label = "always" if w.mode == "always" else "alert"
         last = f", ost. {w.last_price:.2f}" if w.last_price is not None else ""
         lines.append(
-            f"#{w.id} {w.origin}→{w.destination} [{typ}] prog {w.threshold:.0f} "
-            f"| {okno} | {tryb}{last}"
+            f"#{w.id} {w.origin} -> {w.destination} [{trip_type}] prog {w.threshold:.0f} "
+            f"| {window} | {mode_label}{last}"
         )
     lines.append("")
     lines.append("Usun: /unwatch <numer>")
@@ -345,6 +315,7 @@ async def cmd_mywatches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @authorized_only
 async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /unwatch: remove (deactivate) a user's watch by number."""
     if not context.args:
         await update.message.reply_text("Uzycie: /unwatch <numer>\nNumery zobaczysz przez /mywatches")
         return
@@ -355,13 +326,14 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     ok = remove_watch(chat_id=update.effective_chat.id, watch_id=watch_id, db_path=_db_path())
     if ok:
-        await update.message.reply_text(f"✅ Usunieto obserwacje #{watch_id}.")
+        await update.message.reply_text(f"Usunieto obserwacje #{watch_id}.")
     else:
         await update.message.reply_text(f"Nie znaleziono Twojej obserwacji #{watch_id}.")
 
 
 @authorized_only
 async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /alert: check a price threshold against the cheapest offer in the DB."""
     if not context.args:
         await update.message.reply_text("Uzycie: /alert <prog> [waluta]\nNp: /alert 30 EUR")
         return
@@ -377,93 +349,192 @@ async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @authorized_only
 async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler /find: search flights, save them and return top offers with weather."""
     args = context.args
     if len(args) < 4:
         await update.message.reply_text(
-            "Uzycie: /find <skad> <dokad> <data-od> <data-do> [oneway]\n\n"
+            "Uzycie: /find <skad> <dokad> <data-od> <data-do> [oneway] [dni: N lub N-M]\n\n"
             "Przyklady:\n"
             "/find WAW TIA 2026-08-02 2026-08-09\n"
             "/find KRK FCO 2026-07-01 2026-07-31 oneway\n"
+            "/find KRK BCN 2026-08-01 2026-08-31 3-5   (3-5 dni na miejscu)\n"
             "/find GDN anywhere 2026-07-01 2026-08-31"
         )
         return
 
     origin, destination, dep_date, arr_date = args[0], args[1], args[2], args[3]
-    oneway = len(args) >= 5 and args[4].lower() == "oneway"
 
-    req = build_find_request(origin, destination, dep_date, arr_date, oneway=oneway)
+    # Remaining arguments by type - order does not matter: 'oneway' or day range 'N' / 'N-M'
+    oneway = False
+    min_days = None
+    max_days = None
+    for a in args[4:]:
+        al = a.lower()
+        if al == "oneway":
+            oneway = True
+        elif "-" in al and all(p.isdigit() for p in al.split("-", 1)):
+            lo, hi = al.split("-", 1)
+            min_days, max_days = int(lo), int(hi)
+        elif al.isdigit():
+            min_days = max_days = int(al)
+
+    req = build_find_request(
+        origin, destination, dep_date, arr_date, oneway=oneway,
+        min_days=min_days, max_days=max_days,
+    )
     if req.error:
-        await update.message.reply_text(f"❌ {req.error}")
+        await update.message.reply_text(f"{req.error}")
         return
 
-    typ = "one-way" if req.is_oneway else "round-trip"
-    cel = "dowolny kierunek" if req.is_anywhere else req.destination
+    trip_type = "one-way" if req.is_oneway else "round-trip"
+    dest_label = "dowolny kierunek" if req.is_anywhere else req.destination
     prefix = ""
     if not req.is_anywhere and not req.known_destination:
         prefix = (
-            f"⚠️ Nie znam lotniska {req.destination} - jesli to czesc wiekszego miasta "
+            f"Uwaga: nie znam lotniska {req.destination} - jesli to czesc wiekszego miasta "
             f"(jak BGY=Milan), wyszukiwanie moze nie zadzialac.\n\n"
         )
-    await update.message.reply_text(f"{prefix}🔎 Szukam: {req.origin} → {cel} ({typ})... (30-60s)")
+    await update.message.reply_text(f"{prefix}Szukam: {req.origin} -> {dest_label} ({trip_type})... (30-60s)")
 
     result = await asyncio.to_thread(search_and_save, req.url, _db_path(), 20)
     if not result.success:
         await update.message.reply_text(
-            f"❌ Brak wynikow: {result.error_message}\n"
+            f"Brak wynikow: {result.error_message}\n"
             "Sprawdz czy kody lotnisk sa poprawne i czy w tym terminie sa loty."
         )
         return
 
     offers = list_offers(db_path=_db_path(), run_id=result.run_id, limit=10)
     msg = (
-        f"✅ Znalazlem {result.offers_count} ofert (run #{result.run_id})\n\n"
+        f"Znalazlem {result.offers_count} ofert (run #{result.run_id})\n\n"
         + format_offers_list(offers, max_items=5)
     )
 
-    # Pogoda w destynacji (tylko dla konkretnego celu, nie anywhere)
+    # Weather at the destination (only for a concrete destination, not anywhere)
     if not req.is_anywhere:
         try:
             month = int(dep_date.split("-")[1])
             w = await asyncio.to_thread(weather_for, req.destination, month, _db_path())
             if w is not None:
-                msg += f"\n\n🌍 Pogoda {req.destination} (typowo):\n{w.summary()}"
+                msg += f"\n\nPogoda {req.destination} (typowo):\n{w.summary()}"
         except (ValueError, IndexError):
             pass
 
     await update.message.reply_text(msg)
 
 
-@authorized_only
-async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
-        await update.message.reply_text(
-            "Uzycie: /search <url do AZair>\nLink wygenerujesz przez generate_url.py"
+# --- NATURAL LANGUAGE (LLM via Ollama) ---
+
+async def _run_find_intent(update: Update, intent) -> None:
+    """Run a search from a ready intent (used by the NL handler)."""
+    req = build_find_request(
+        intent.origin, intent.destination, intent.dep_date, intent.arr_date,
+        oneway=intent.oneway, min_days=intent.min_days, max_days=intent.max_days,
+    )
+    if req.error:
+        await update.message.reply_text(f"{req.error}")
+        return
+
+    trip_type = "one-way" if req.is_oneway else "round-trip"
+    dest_label = "dowolny kierunek" if req.is_anywhere else req.destination
+    prefix = ""
+    if not req.is_anywhere and not req.known_destination:
+        prefix = (
+            f"Uwaga: nie znam lotniska {req.destination} - jesli to czesc wiekszego miasta "
+            f"(jak BGY=Milan), wyszukiwanie moze nie zadzialac.\n\n"
         )
-        return
-    url = " ".join(context.args).strip()
-    if not url.startswith("http"):
-        await update.message.reply_text("URL musi zaczynac sie od http(s)://")
-        return
+    await update.message.reply_text(
+        f"{prefix}Szukam: {req.origin} -> {dest_label} ({trip_type}), "
+        f"{intent.dep_date} - {intent.arr_date}... (30-60s)"
+    )
 
-    await update.message.reply_text("🔎 Szukam... (30-60s)")
-    # Playwright dziala synchronicznie - puszczamy w threadpoolu zeby nie blokowac event loopu
-    result = await asyncio.to_thread(search_and_save, url, _db_path(), 20)
-
+    result = await asyncio.to_thread(search_and_save, req.url, _db_path(), 20)
     if not result.success:
-        await update.message.reply_text(f"❌ Blad: {result.error_message}")
+        await update.message.reply_text(
+            f"Brak wynikow: {result.error_message}\n"
+            "Sprobuj inny termin lub kierunek."
+        )
         return
 
     offers = list_offers(db_path=_db_path(), run_id=result.run_id, limit=10)
     msg = (
-        f"✅ Run #{result.run_id}: zapisano {result.offers_count} ofert\n\n"
+        f"Znalazlem {result.offers_count} ofert (run #{result.run_id})\n\n"
         + format_offers_list(offers, max_items=5)
     )
+    if not req.is_anywhere:
+        try:
+            month = int(intent.dep_date.split("-")[1])
+            w = await asyncio.to_thread(weather_for, req.destination, month, _db_path())
+            if w is not None:
+                msg += f"\n\nPogoda {req.destination} (typowo):\n{w.summary()}"
+        except (ValueError, IndexError):
+            pass
     await update.message.reply_text(msg)
+
+
+async def _run_watch_intent(update: Update, intent) -> None:
+    """Set up a watch from a ready intent (used by the NL handler)."""
+    result = add_watch(
+        chat_id=update.effective_chat.id,
+        origin=intent.origin, destination=intent.destination,
+        threshold=intent.threshold, oneway=intent.oneway,
+        dep_date=intent.dep_date, arr_date=intent.arr_date, mode="alert",
+        db_path=_db_path(),
+    )
+    if result.error:
+        await update.message.reply_text(f"{result.error}")
+        return
+    trip_type = "one-way" if intent.oneway else "round-trip"
+    await update.message.reply_text(
+        f"Obserwacja #{result.watch_id}: {intent.origin} -> {intent.destination} ({trip_type})\n"
+        f"Termin: {intent.dep_date} - {intent.arr_date}\n"
+        f"Alert: powiadomie gdy <= {intent.threshold:.0f} EUR"
+    )
+
+
+@authorized_only
+async def on_natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Plain message (not a command) -> LLM turns it into an intent -> find/watch.
+
+    The model SUGGESTS, the code DECIDES: the result is validated in llm_service,
+    and here we handle errors (Ollama down, not understood) with a readable message.
+    """
+    text = (update.message.text or "").strip()
+    if not text:
+        return
+
+    await update.message.reply_text("Rozumiem zapytanie...")
+
+    try:
+        intent = await asyncio.to_thread(parse_query, text)
+    except LLMUnavailable:
+        await update.message.reply_text(
+            "Asystent jezyka naturalnego jest niedostepny (Ollama nie odpowiada).\n"
+            "Uzyj komend, np: /find WAW BCN 2026-08-01 2026-08-31"
+        )
+        return
+    except Exception as exc:
+        log.warning("Blad parsowania NL: %s", exc)
+        await update.message.reply_text(
+            "Nie zrozumialem zapytania. Sprobuj prosciej, np:\n"
+            "„lot z Krakowa do Barcelony w sierpniu” albo uzyj /help"
+        )
+        return
+
+    if intent.error:
+        await update.message.reply_text(f"{intent.error}")
+        return
+
+    if intent.action == "watch":
+        await _run_watch_intent(update, intent)
+    else:
+        await _run_find_intent(update, intent)
 
 
 # --- BOOTSTRAP ---
 
 def build_application() -> Application:
+    """Build the Telegram Application and register all handlers."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError(
@@ -473,9 +544,6 @@ def build_application() -> Application:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("best", cmd_best))
-    app.add_handler(CommandHandler("list", cmd_list))
-    app.add_handler(CommandHandler("runs", cmd_runs))
     app.add_handler(CommandHandler("compare", cmd_compare))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("rank", cmd_rank))
@@ -486,11 +554,14 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("alert", cmd_alert))
     app.add_handler(CommandHandler("find", cmd_find))
-    app.add_handler(CommandHandler("search", cmd_search))
+    # Natural language: any text message that is NOT a command.
+    # Must be the LAST handler, so it does not intercept commands.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_natural_language))
     return app
 
 
 def main() -> None:
+    """Bot entry point: build the application and start polling."""
     app = build_application()
     whitelist = _allowed_chat_ids()
     if whitelist:

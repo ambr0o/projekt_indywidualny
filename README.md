@@ -31,7 +31,6 @@ DANE           db.py (SQLite)        flights.py (Playwright + parser)
 | `bot/` | Bot Telegram |
 | `cron_check.py` | Monitor: sprawdza obserwacje, wysyła alerty |
 | `data/airports.json` | Mapa lotnisk: etykieta AZair + współrzędne (pogoda) |
-| `tests/` | Testy jednostkowe (mockowany scraper, fixturee HTML) |
 
 ## Wymagania i instalacja
 
@@ -87,12 +86,9 @@ Komendy:
 | **Wyszukiwanie** | |
 | `/find WAW TIA 2026-08-02 2026-08-09 [oneway]` | znajdź loty (+ pogoda celu) |
 | `/find GDN anywhere 2026-07-01 2026-08-31` | tryb Anywhere — dowolny kierunek |
-| `/search <url>` | scrapuj gotowy URL AZair |
-| **Przeglądanie** | |
-| `/best` `/list [limit]` `/runs [limit]` | najtańsza / oferty / historia |
 | **Analityka** | |
 | `/rank KRK` | najtańsze kierunki z lotniska |
-| `/stats WAW TIA [cena]` | statystyki trasy + ocena ceny (percentyl) |
+| `/stats WAW TIA <data>` | historia ceny tego lotu w czasie (jak się zmieniała) |
 | `/leg WAW TIA` | cena pojedynczego przelotu + asymetria tam/powrót |
 | `/compare WAW TIA` | zmiana ceny przelotu między 2 ostatnimi wyszukiwaniami |
 | `/weather TIA 8` | typowa pogoda dla lotniska w danym miesiącu |
@@ -135,14 +131,6 @@ Baza jednowalutowa (EUR).
 Typowa pogoda klimatyczna z Open-Meteo (darmowe, bez klucza). Loty są zwykle
 poza zasięgiem prognozy (16 dni), więc używamy danych historycznych z poprzedniego
 roku dla tego samego miesiąca. Wyniki cache'owane w SQLite.
-
-## Testy
-
-```bash
-python -m unittest discover -s tests
-```
-
-Bez internetu — scraper mockowany, parser testowany na zapisanych fixturach HTML.
 
 ## Status
 

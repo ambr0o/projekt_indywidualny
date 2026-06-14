@@ -1,10 +1,16 @@
+"""Builder for AZair flight search URLs.
+
+Turns route parameters (airport labels, IATA codes, dates, options) into the
+query string AZair expects. Also usable as a CLI via ``main``.
+"""
+
 import argparse
 import urllib.parse
 
 
 BASE_URL = "https://www.azair.eu/azfin.php"
 
-# Indeksy slotow AZair (np. WMI=0, KTW=6, RZE=7, KRK=8 dla Warszawy)
+# AZair slot indexes (e.g. WMI=0, KTW=6, RZE=7, KRK=8 for Warsaw)
 WARSAW_SRC_SLOTS = [0, 6, 7, 8]
 
 
@@ -37,12 +43,37 @@ def build_url_params(
     dst_mc="",
     currency="EUR",
     is_oneway="return",
-    min_days_stay="5",
+    min_days_stay="2",
     max_days_stay="8",
     adults="1",
     max_chng="1",
 ):
-    # AZair akceptuje tylko format DD.M.YYYY w polach depdate/arrdate (nie ISO).
+    """Build the AZair query parameter dict for a search.
+
+    Args:
+        src_airport_label: Display label of the origin airport.
+        dst_airport_label: Display label of the destination airport.
+        dep_date: Departure date (window start), ISO or dotted format.
+        arr_date: Return date / window end, ISO or dotted format.
+        src_typed_text: Text typed in the origin field.
+        dst_typed_text: Text typed in the destination field.
+        src_codes: IATA codes for origin slots.
+        dst_codes: IATA codes for destination slots.
+        src_slots: Explicit origin slot indexes (defaults to 0,1,2,...).
+        dst_slots: Explicit destination slot indexes (defaults to 0,1,2,...).
+        src_mc: AZair origin metropolitan code (e.g. "WAR_ALL").
+        dst_mc: AZair destination metropolitan code (e.g. "MIL_ALL").
+        currency: Currency code.
+        is_oneway: "return" or "oneway".
+        min_days_stay: Minimum days of stay (round-trip).
+        max_days_stay: Maximum days of stay (round-trip).
+        adults: Number of adult passengers.
+        max_chng: Maximum number of changes (connections).
+
+    Returns:
+        A dict of AZair query parameters.
+    """
+    # AZair only accepts the DD.M.YYYY format in depdate/arrdate fields (not ISO).
     dep_date = _to_azair_date(dep_date)
     arr_date = _to_azair_date(arr_date)
 
@@ -109,9 +140,9 @@ def build_url_params(
 
 
 def _to_azair_date(s):
-    """Konwertuje '2026-07-01' lub '1.7.2026' do formatu AZair: '1.7.2026' (D.M.YYYY).
+    """Convert '2026-07-01' or '1.7.2026' to AZair format '1.7.2026' (D.M.YYYY).
 
-    AZair odrzuca format ISO (YYYY-MM-DD) na polach depdate/arrdate.
+    AZair rejects the ISO format (YYYY-MM-DD) on the depdate/arrdate fields.
     """
     s = s.strip()
     if "-" in s:
@@ -128,6 +159,7 @@ def _to_azair_date(s):
 
 
 def add_airport_slots(params, prefix, codes, slots=None):
+    """Add ``{prefix}apN`` slot params for each airport code in place."""
     if not codes:
         return
     if slots is None:
@@ -139,6 +171,7 @@ def add_airport_slots(params, prefix, codes, slots=None):
 
 
 def parse_slots(value):
+    """Parse a comma-separated slot index string into a list of ints, or None."""
     if not value:
         return None
     return [int(s.strip()) for s in value.split(",") if s.strip() != ""]
@@ -151,6 +184,7 @@ def build_search_url(
     arr_date,
     **kwargs,
 ):
+    """Build the full AZair search URL from route parameters."""
     params = build_url_params(
         src_airport_label,
         dst_airport_label,
@@ -162,12 +196,14 @@ def build_search_url(
 
 
 def parse_codes(value):
+    """Parse a comma-separated IATA code string into a list, or None if empty."""
     if not value:
         return None
     return [c.strip() for c in value.split(",") if c.strip()]
 
 
 def parse_args():
+    """Parse command-line arguments for the URL generator CLI."""
     parser = argparse.ArgumentParser(
         description="Generuj link wyszukiwania AZair z podanych parametrów.",
     )
@@ -252,6 +288,7 @@ def parse_args():
 
 
 def main():
+    """Parse CLI arguments, build the search URL and print it."""
     args = parse_args()
     if not args.anywhere and not args.dst_label:
         raise SystemExit("Bez --anywhere musisz podac --dst-label.")

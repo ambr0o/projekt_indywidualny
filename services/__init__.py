@@ -1,4 +1,4 @@
-"""Service layer - logika biznesowa, bez znajomosci interfejsu uzytkownika.
+"""Service layer - business logic with no knowledge of the user interface.
 
-Sluzy jako jedyny punkt wejscia dla CLI, bota Telegrama, REST API itp.
+Serves as the single entry point for the CLI, the Telegram bot, a REST API, etc.
 """

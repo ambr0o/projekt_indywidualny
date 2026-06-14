@@ -1,3 +1,9 @@
+"""SQLite persistence layer for searches, offers, weather cache and watches.
+
+Contains schema creation/migration helpers and raw SQL accessors. No business
+or statistical logic lives here - just storage and retrieval.
+"""
+
 import json
 
 ALLOWED_SEARCH_STATUSES = ["started", "done", "failed"]
@@ -5,6 +11,7 @@ DEFAULT_DB_PATH = "database.db"
 
 
 def create_search_runs_table(conn):
+    """Create the ``search_runs`` table if it does not already exist."""
     cur = conn.cursor()
     cur.execute(
         """
@@ -21,6 +28,7 @@ def create_search_runs_table(conn):
 
 
 def create_flight_offers_table(conn):
+    """Create the ``flight_offers`` table and apply lightweight migrations."""
     cur = conn.cursor()
     cur.execute(
         """
@@ -40,7 +48,7 @@ def create_flight_offers_table(conn):
         )
         """
     )
-    # Lekka migracja: dodaj nowe kolumny gdy ich brak (idempotentne)
+    # Lightweight migration: add new columns when missing (idempotent)
     existing = {row[1] for row in cur.execute("PRAGMA table_info(flight_offers)").fetchall()}
     new_columns = {
         "airline_code": "TEXT",
@@ -54,8 +62,8 @@ def create_flight_offers_table(conn):
         if col not in existing:
             cur.execute(f"ALTER TABLE flight_offers ADD COLUMN {col} {col_type}")
 
-    # Indeksy pod zapytania analityczne (filtr po trasie) i lookup po runie.
-    # Niemal kazda funkcja analityczna filtruje po (origin, destination).
+    # Indexes for analytics queries (filter by route) and lookup by run.
+    # Almost every analytics function filters by (origin, destination).
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_offers_route ON flight_offers(origin, destination)"
     )
@@ -66,7 +74,10 @@ def create_flight_offers_table(conn):
 
 
 def create_weather_cache_table(conn):
-    """Cache pogodowy - klucz (iata, month), zeby nie pytac Open-Meteo wielokrotnie."""
+    """Create the weather cache table keyed by (iata, month).
+
+    Caching avoids querying Open-Meteo repeatedly for the same airport/month.
+    """
     cur = conn.cursor()
     cur.execute(
         """
@@ -87,6 +98,7 @@ def create_weather_cache_table(conn):
 
 
 def get_cached_weather(conn, iata, month):
+    """Return cached weather row for (iata, month), or None if not cached."""
     cur = conn.cursor()
     row = cur.execute(
         "SELECT temp_max, temp_min, rain_mm, rainy_days, kind FROM weather_cache WHERE iata=? AND month=?",
@@ -96,6 +108,7 @@ def get_cached_weather(conn, iata, month):
 
 
 def save_weather_cache(conn, iata, month, temp_max, temp_min, rain_mm, rainy_days, kind):
+    """Insert or replace the cached weather row for (iata, month)."""
     cur = conn.cursor()
     cur.execute(
         """
@@ -108,12 +121,13 @@ def save_weather_cache(conn, iata, month, temp_max, temp_min, rain_mm, rainy_day
 
 
 def create_watched_routes_table(conn):
-    """Obserwacje cenowe uzytkownikow (rdzen monitora cen).
+    """Create the ``watched_routes`` table (core of the price monitor).
 
-    Kazdy wiersz = jeden uzytkownik (chat_id) obserwujacy jedna trase z progiem.
-    last_price/last_checked uzupelniane przez cron przy kazdym sprawdzeniu.
-    dep_date/arr_date - okno dat wylotu (NULL = domyslne okno crona).
-    mode - 'alert' (gdy <= prog) lub 'always' (cena przy kazdym sprawdzeniu).
+    Each row is one user (chat_id) watching one route with a price threshold.
+    ``last_price``/``last_checked`` are filled by the cron on each check.
+    ``dep_date``/``arr_date`` are the departure date window (NULL = the cron's
+    default window). ``mode`` is either 'alert' (when <= threshold) or 'always'
+    (report the price on every check).
     """
     cur = conn.cursor()
     cur.execute(
@@ -133,7 +147,7 @@ def create_watched_routes_table(conn):
         )
         """
     )
-    # Lekka migracja: dodaj kolumny gdy brak (idempotentne)
+    # Lightweight migration: add columns when missing (idempotent)
     existing = {row[1] for row in cur.execute("PRAGMA table_info(watched_routes)").fetchall()}
     new_columns = {
         "dep_date": "TEXT",
@@ -149,6 +163,7 @@ def create_watched_routes_table(conn):
 def insert_watched_route(conn, chat_id, origin, destination, threshold,
                          currency="EUR", oneway=False,
                          dep_date=None, arr_date=None, mode="alert"):
+    """Insert a new watched route and return its row id."""
     cur = conn.cursor()
     cur.execute(
         """
@@ -164,7 +179,7 @@ def insert_watched_route(conn, chat_id, origin, destination, threshold,
 
 
 def fetch_watched_routes(conn, chat_id=None, only_active=True):
-    """Obserwacje - wszystkie, danego uzytkownika, opcjonalnie tylko aktywne."""
+    """Return watched routes: all, for a given user, optionally only active."""
     cur = conn.cursor()
     query = """
         SELECT id, chat_id, origin, destination, threshold, currency, oneway,
@@ -183,9 +198,10 @@ def fetch_watched_routes(conn, chat_id=None, only_active=True):
 
 
 def deactivate_watched_route(conn, watch_id, chat_id):
-    """Dezaktywuje obserwacje - tylko jesli nalezy do danego chat_id (bezpieczenstwo).
+    """Deactivate a watch only if it belongs to the given chat_id (safety).
 
-    Zwraca True gdy cos zmieniono, False gdy nie znaleziono/nie nalezy do usera.
+    Returns:
+        True when a row was changed, False when not found or not owned by user.
     """
     cur = conn.cursor()
     cur.execute(
@@ -197,7 +213,7 @@ def deactivate_watched_route(conn, watch_id, chat_id):
 
 
 def update_watched_route_check(conn, watch_id, last_price):
-    """Zapisuje wynik ostatniego sprawdzenia przez cron."""
+    """Store the result of the last cron check for a watched route."""
     cur = conn.cursor()
     cur.execute(
         "UPDATE watched_routes SET last_price = ?, last_checked = datetime('now') WHERE id = ?",
@@ -207,6 +223,11 @@ def update_watched_route_check(conn, watch_id, last_price):
 
 
 def insert_search_run(conn, search_mode, params, status):
+    """Insert a search run row and return its id.
+
+    Raises:
+        ValueError: If ``status`` is not one of ALLOWED_SEARCH_STATUSES.
+    """
     if status not in ALLOWED_SEARCH_STATUSES:
         raise ValueError(f"Invalid status '{status}'.")
 
@@ -226,10 +247,16 @@ def insert_search_run(conn, search_mode, params, status):
 
 
 def start_search_run(conn, search_mode, params):
+    """Start a new search run (status 'started') and return its id."""
     return insert_search_run(conn, search_mode=search_mode, params=params, status="started")
 
 
 def finish_search_run(conn, run_id, status):
+    """Mark a search run as finished with status 'done' or 'failed'.
+
+    Raises:
+        ValueError: If ``status`` is not 'done' or 'failed'.
+    """
     if status not in ["done", "failed"]:
         raise ValueError("finish_search_run status must be 'done' or 'failed'")
 
@@ -259,6 +286,7 @@ def insert_flight_offer(
     outbound_price=None,
     return_price=None,
 ):
+    """Insert one flight offer row linked to a search run."""
     cur = conn.cursor()
     cur.execute(
         """
@@ -293,6 +321,7 @@ def insert_flight_offer(
 
 
 def fetch_flight_offers(conn, search_run_id=None, limit=50):
+    """Return flight offers for a specific run, or the most recent overall."""
     cur = conn.cursor()
     if search_run_id is not None:
         rows = cur.execute(
@@ -321,6 +350,7 @@ def fetch_flight_offers(conn, search_run_id=None, limit=50):
 
 
 def fetch_search_runs(conn, limit=10):
+    """Return the most recent search runs, newest first."""
     cur = conn.cursor()
     return cur.execute(
         """
@@ -333,12 +363,40 @@ def fetch_search_runs(conn, limit=10):
     ).fetchall()
 
 
-# --- Gettery analityczne (surowe SQL, bez logiki statystycznej) ---
+# --- Analytics accessors (raw SQL, no statistical logic) ---
+
+def fetch_price_history(conn, origin, destination, departure_date):
+    """Price history of a SPECIFIC flight (route + departure date) over time.
+
+    One point per scrape (search_run): the cheapest price of that flight in
+    that run. This compares THE SAME flight against itself at different moments,
+    instead of mixing different departure dates (which would distort min/deals).
+
+    ``departure_date`` may be 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM' - we compare the
+    first 10 characters (the day only).
+
+    Returns:
+        ``[(created_at, min_price), ...]`` sorted by collection time.
+    """
+    cur = conn.cursor()
+    return cur.execute(
+        """
+        SELECT r.created_at, MIN(o.price)
+        FROM flight_offers o
+        JOIN search_runs r ON o.search_run_id = r.id
+        WHERE o.origin = ? AND o.destination = ?
+          AND substr(o.departure_date, 1, 10) = ?
+        GROUP BY o.search_run_id
+        ORDER BY r.created_at ASC, r.id ASC
+        """,
+        (origin.upper(), destination.upper(), departure_date[:10]),
+    ).fetchall()
+
 
 def fetch_prices_for_route(conn, origin, destination):
-    """Zwraca [(price, departure_date), ...] dla danej trasy (para lotnisk).
+    """Return ``[(price, departure_date), ...]`` for a route (airport pair).
 
-    Baza jest jednowalutowa (EUR), wiec bez filtra waluty.
+    The database is single-currency (EUR), so there is no currency filter.
     """
     cur = conn.cursor()
     return cur.execute(
@@ -353,7 +411,7 @@ def fetch_prices_for_route(conn, origin, destination):
 
 
 def fetch_destinations_from(conn, origin):
-    """Zwraca [(destination, min_price, avg_price, count), ...] dla danego lotniska wylotu."""
+    """Return ``[(destination, min_price, avg_price, count), ...]`` for an origin airport."""
     cur = conn.cursor()
     return cur.execute(
         """
@@ -368,14 +426,15 @@ def fetch_destinations_from(conn, origin):
 
 
 def fetch_direction_leg_prices(conn, origin, destination):
-    """Zwraca liste cen POJEDYNCZEGO przelotu origin->destination (nogi).
+    """Return prices of a SINGLE flight (leg) origin->destination.
 
-    Zbiera z trzech zrodel, wszystko w jednej jednostce 'cena jednego lotu':
-      1. one-waye o->d              -> price (cala cena one-waya = przelot o->d)
-      2. round-tripy o->d           -> outbound_price (noga "tam" leci o->d)
-      3. round-tripy d->o           -> return_price (noga "powrot" podrozy d->o leci o->d)
+    Collected from three sources, all in the same unit 'price of one flight':
+      1. one-ways o->d              -> price (the whole one-way price = leg o->d)
+      2. round-trips o->d           -> outbound_price (the outbound leg flies o->d)
+      3. round-trips d->o           -> return_price (the return leg of trip d->o flies o->d)
 
-    Zwraca [float, ...].
+    Returns:
+        ``[float, ...]``.
     """
     o = origin.upper()
     d = destination.upper()
@@ -383,7 +442,7 @@ def fetch_direction_leg_prices(conn, origin, destination):
 
     prices = []
 
-    # 1 + 2: wiersze gdzie podroz to o->d
+    # 1 + 2: rows where the trip is o->d
     rows = cur.execute(
         """
         SELECT price, outbound_price, return_date
@@ -394,15 +453,15 @@ def fetch_direction_leg_prices(conn, origin, destination):
     ).fetchall()
     for price, outbound_price, return_date in rows:
         if return_date is None:
-            # one-way o->d: cala cena to przelot o->d
+            # one-way o->d: the whole price is the leg o->d
             if price is not None:
                 prices.append(price)
         else:
-            # round-trip o->d: noga "tam" to przelot o->d
+            # round-trip o->d: the outbound leg is the flight o->d
             if outbound_price is not None:
                 prices.append(outbound_price)
 
-    # 3: round-tripy zapisane jako d->o - ich noga "powrot" leci o->d
+    # 3: round-trips stored as d->o - their return leg flies o->d
     rows = cur.execute(
         """
         SELECT return_price
@@ -419,10 +478,10 @@ def fetch_direction_leg_prices(conn, origin, destination):
 
 
 def fetch_prices_by_weekday(conn, origin, destination):
-    """Zwraca [(weekday, avg_price, min_price, count), ...] dla trasy.
+    """Return ``[(weekday, avg_price, min_price, count), ...]`` for a route.
 
-    weekday wg strftime('%w'): '0'=niedziela ... '6'=sobota.
-    departure_date bywa 'YYYY-MM-DD' lub 'YYYY-MM-DDTHH:MM' - tniemy do 10 znakow.
+    weekday per strftime('%w'): '0'=Sunday ... '6'=Saturday.
+    ``departure_date`` may be 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM' - we cut to 10 chars.
     """
     cur = conn.cursor()
     return cur.execute(
@@ -440,9 +499,9 @@ def fetch_prices_by_weekday(conn, origin, destination):
 
 
 def get_best_offer(conn, search_run_id=None):
-    """Najtansza oferta - z konkretnego runu lub globalnie.
+    """Return the cheapest offer - from a specific run or globally.
 
-    Zawsze sortuje po cenie rosnaco, niezaleznie od run_id.
+    Always sorts by ascending price, regardless of run_id.
     """
     cur = conn.cursor()
     if search_run_id is not None:
@@ -473,18 +532,18 @@ def get_best_offer(conn, search_run_id=None):
 
 
 def compare_latest_runs(conn, origin=None, destination=None):
-    """Porownuje cene PRZELOTU origin->destination miedzy 2 ostatnimi runami.
+    """Compare the price of the flight origin->destination between the 2 latest runs.
 
-    Liczy na poziomie nogi (jak fetch_direction_leg_prices), wiec nie miesza
-    round-tripow z one-wayami - spojna jednostka 'cena jednego lotu'.
-    Wymaga origin i destination (porownanie ma sens tylko dla konkretnego kierunku).
+    Computes at the leg level (like fetch_direction_leg_prices), so it does not
+    mix round-trips with one-ways - a consistent 'price of one flight' unit.
+    Requires origin and destination (comparison only makes sense for a direction).
     """
     if not origin or not destination:
         return None
     o, d = origin.upper(), destination.upper()
     cur = conn.cursor()
 
-    # Dwa ostatnie udane runy ktore zawieraja kierunek o->d (jako noga tam, powrot lub one-way)
+    # The two latest successful runs that contain direction o->d (as outbound, return or one-way)
     runs = cur.execute(
         """
         SELECT DISTINCT r.id, r.created_at
@@ -492,7 +551,7 @@ def compare_latest_runs(conn, origin=None, destination=None):
         JOIN flight_offers o ON o.search_run_id = r.id
         WHERE r.status = 'done'
           AND (
-            (o.origin = ? AND o.destination = ?)        -- o->d (one-way price albo outbound_price)
+            (o.origin = ? AND o.destination = ?)        -- o->d (one-way price or outbound_price)
             OR (o.origin = ? AND o.destination = ? AND o.return_date IS NOT NULL)  -- d->o, return_price
           )
         ORDER BY r.id DESC
@@ -504,7 +563,7 @@ def compare_latest_runs(conn, origin=None, destination=None):
         return None
 
     def min_leg_price(run_id):
-        """Najtansza cena przelotu o->d w danym runie (z nog)."""
+        """Cheapest price of the flight o->d in the given run (from legs)."""
         prices = []
         for price, outbound_price, return_date in cur.execute(
             "SELECT price, outbound_price, return_date FROM flight_offers "
