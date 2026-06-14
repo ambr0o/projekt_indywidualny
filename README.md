@@ -99,6 +99,27 @@ Tryby `/watch`:
 - daty opcjonalne (domyślnie ~2 miesiące); wąskie okno = konkretny termin,
   szerokie = elastyczne łowienie okazji
 
+## Język naturalny (opcjonalne)
+
+Oprócz komend możesz pisać do bota normalnym zdaniem
+(np. „lot z Krakowa do Barcelony w sierpniu", „powiadom gdy WAW Tirana poniżej
+50 euro"). Lokalny model LLM zamienia zdanie na zapytanie, a wynik jest twardo
+walidowany (model sugeruje, kod decyduje).
+
+Wymaga lokalnie uruchomionej [Ollamy](https://ollama.com):
+
+```bash
+# 1. zainstaluj Ollamę (https://ollama.com)
+# 2. pobierz model (~4.7 GB)
+ollama pull qwen2.5:7b
+# 3. Ollama musi działać w tle (serwer na localhost:11434)
+ollama serve
+```
+
+Bez Ollamy bot działa normalnie — po prostu język naturalny zwraca komunikat
+„asystent niedostępny", a wszystkie komendy (`/find`, `/watch`, `/stats`...)
+działają bez zmian. Model konfigurowalny przez `OLLAMA_MODEL` w `.env`.
+
 ## Model danych
 
 Tabele połączone relacją 1:N:
