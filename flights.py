@@ -5,6 +5,8 @@ parser helpers (regular expressions) that turn raw offer text and HTML into
 structured offer dictionaries.
 """
 
+# NOTE: Code in this file were generated/refined with the assistance of AI.
+
 import re
 import urllib.parse
 from dataclasses import dataclass

@@ -7,6 +7,10 @@ AZair (Playwright), wlasna historia cen w SQLite, analiza cenowa i pogoda.
 
 Glowna idea: **push zamiast pull** — ustawiasz raz, dostajesz alert gdy okazja.
 
+.. note::
+
+   Code in this project were generated/refined with the assistance of AI.
+
 .. toctree::
    :maxdepth: 2
    :caption: Spis tresci:

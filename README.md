@@ -161,3 +161,7 @@ cena przelotu, porównanie, pogoda.
 W rozwoju: analityka historyczna (percentyl/trendy) nabiera dokładności w miarę
 jak monitor zbiera dane w czasie — infrastruktura gotowa, potrzebne dłuższe okno
 obserwacji.
+
+## Uwaga
+
+> NOTE: Code in this project were generated/refined with the assistance of AI.
